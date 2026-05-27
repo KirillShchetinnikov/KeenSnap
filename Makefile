@@ -2,7 +2,7 @@ SHELL := /bin/bash
 VERSION := $(shell cat VERSION)
 PACKAGE := keensnap
 ROOT_DIR := /opt
-DEPENDENCIES := curl, tar, ca-certificates, wget-ssl
+DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq
 
 .PHONY: clean _pkg-clean _pkg-control _pkg-scripts _pkg-ipk keensnap-ipk
 

@@ -99,13 +99,6 @@ rci_request() {
   curl -s "http://localhost:79/rci/$endpoint"
 }
 
-rci_parse() {
-  local command="$1"
-  curl -fsS -H "Content-Type: application/json" \
-    -d "[{\"parse\":\"$command\"}]" \
-    "http://localhost:79/rci/"
-}
-
 ndmc_cli() {
   unset LD_LIBRARY_PATH
   ndmc -c "$@"
@@ -116,7 +109,7 @@ get_device() {
 }
 
 get_fw_version() {
-  rci_request "show/version" | grep -o '"title": "[^"]*"' | cut -d'"' -f4 2>/dev/null
+  rci_request "show/version" | grep -o '"release": "[^"]*"' | cut -d'"' -f4 2>/dev/null
 }
 
 get_hw_id() {
@@ -143,58 +136,58 @@ get_backup_content() {
 }
 
 select_schedule() {
-  message=$1
-  schedules=""
-  index=1
-  schedule_output=$(ndmc_cli show sc schedule)
+  local message="$1"
+  local schedules=""
+  local index=1
+  local schedule_output
+  local parsed_schedules
 
-  while IFS= read -r line; do
-    if echo "$line" | grep -q "^\s*name:" && ! echo "$line" | grep -q "config"; then
-      if [ -n "$current_schedule" ]; then
-        if [ -n "$current_desc" ]; then
-          echo "$index. $current_schedule ($current_desc)"
-        else
-          echo "$index. $current_schedule"
-        fi
-        schedules="$schedules $index:$current_schedule"
-        index=$((index + 1))
-      fi
-      current_schedule=$(echo "$line" | cut -d ':' -f2- | sed 's/^ *//g')
-      current_desc=""
-    fi
+  packages_checker "jq" || return 1
 
-    if echo "$line" | grep -q "^\s*description:"; then
-      current_desc=$(echo "$line" | cut -d ':' -f2- | sed 's/^ *//g')
-    fi
-  done <<EOF
-$schedule_output
-EOF
+  schedule_output=$(rci_request "show/sc/schedule")
 
-  if [ -n "$current_schedule" ]; then
-    if [ -n "$current_desc" ]; then
-      echo "$index. $current_schedule ($current_desc)"
-    else
-      echo "$index. $current_schedule"
-    fi
-    schedules="$schedules $index:$current_schedule"
+  if [ -z "$schedule_output" ]; then
+    print_message "Расписания не найдены" "$RED"
+    return 1
   fi
+
+  parsed_schedules=$(printf '%s\n' "$schedule_output" | jq -r '
+    to_entries[]
+    | select(.key | startswith("schedule"))
+    | [(.key // ""), (.value.description // "")]
+    | @tsv
+  ' 2>/dev/null)
+
+  while IFS=$(printf '\t') read -r name desc; do
+    [ -z "$name" ] && continue
+    if [ -n "$desc" ]; then
+      echo "$index. $name ($desc)"
+    else
+      echo "$index. $name"
+    fi
+    schedules="$schedules $index:$name"
+    index=$((index + 1))
+  done <<EOF
+$parsed_schedules
+EOF
 
   if [ -z "$schedules" ]; then
     print_message "Расписания не найдены" "$RED"
-  else
-    echo "0. Назад"
-    echo ""
-    read -p "$message " choice
-    choice=$(echo "$choice" | tr -d ' \n\r')
-    [ "$choice" = "0" ] && return 1
-
-    SCHEDULE_SELECTED=$(echo "$schedules" | tr ' ' '\n' | grep "^$choice:" | cut -d ':' -f2)
-    if [ -z "$SCHEDULE_SELECTED" ]; then
-      print_message "Неверный выбор" "$RED"
-      return 1
-    fi
-    print_message "Вы выбрали: $SCHEDULE_SELECTED" "$CYAN"
+    return 1
   fi
+
+  echo "0. Назад"
+  echo ""
+  read -p "$message " choice
+  choice=$(echo "$choice" | tr -d ' \n\r')
+  [ "$choice" = "0" ] && return 1
+
+  SCHEDULE_SELECTED=$(echo "$schedules" | tr ' ' '\n' | grep "^$choice:" | cut -d ':' -f2)
+  if [ -z "$SCHEDULE_SELECTED" ]; then
+    print_message "Неверный выбор" "$RED"
+    return 1
+  fi
+  print_message "Вы выбрали: $SCHEDULE_SELECTED" "$CYAN"
 
   return 0
 }
@@ -629,125 +622,58 @@ manual_backup() {
   exit_function
 }
 
-select_drive_extract_value() {
-  echo "$1" | cut -d ':' -f2- | sed 's/^[[:space:]]*//; s/[",]//g'
-}
-
-select_drive_reset_partition() {
-  in_partition=0
-  uuid=""
-  label=""
-  fstype=""
-  total_bytes=""
-  free_bytes=""
-}
-
-select_drive_reset_media() {
-  media_found=1
-  media_is_usb=0
-  current_manufacturer=""
-  select_drive_reset_partition
-}
-
-select_drive_add_partition() {
-  local used_bytes display_name fstype_upper
-
-  if [ -z "$uuid" ] || [ -z "$fstype" ] || [ "$(echo "$fstype" | tr '[:upper:]' '[:lower:]')" = "swap" ]; then
-    select_drive_reset_partition
-    return
-  fi
-
-  echo "$total_bytes" | grep -qE '^[0-9]+$' || total_bytes=0
-  echo "$free_bytes" | grep -qE '^[0-9]+$' || free_bytes=0
-
-  used_bytes=$((total_bytes - free_bytes))
-  [ "$used_bytes" -lt 0 ] && used_bytes=0
-
-  if [ -n "$label" ]; then
-    display_name="$label"
-  elif [ -n "$current_manufacturer" ]; then
-    display_name="$current_manufacturer"
-  else
-    display_name="Unknown"
-  fi
-
-  fstype_upper=$(echo "$fstype" | tr '[:lower:]' '[:upper:]')
-  echo "$index. $display_name ($fstype_upper, $(format_size $used_bytes $total_bytes))"
-  if [ -n "$uuids" ]; then
-    uuids="$uuids
-$uuid"
-  else
-    uuids="$uuid"
-  fi
-  index=$((index + 1))
-  select_drive_reset_partition
-}
-
 select_drive() {
   local message="$1"
-  local value
+  local media_output parsed_output
+  local uuid display_name fstype total_bytes free_bytes used_bytes
 
-  uuids=""
-  index=1
-  media_found=0
-  media_is_usb=0
-  media_output=$(rci_parse "show media")
-  current_manufacturer=""
-  select_drive_reset_partition
+  if ! packages_checker "jq"; then
+    print_message "Не удалось установить jq" "$RED"
+    return 1
+  fi
 
-  if [ -z "$media_output" ]; then
+  local uuids=""
+  local index=1
+  media_output=$(rci_request "ls")
+
+  echo "00. Назад"
+  echo "0. Встроенное хранилище (может не хватить места)"
+
+  parsed_output=$(printf '%s\n' "$media_output" | jq -r '
+    .entry | to_entries[]
+    | select(.value.storage? == "usb" and (.value.fstype? // "" | ascii_downcase) != "swap" and (.value.mounted? // "") == "yes")
+    | [
+        (.key | rtrimstr(":")),
+        (.value.label // (.key | rtrimstr(":")) // "Unknown"),
+        ((.value.fstype // "") | ascii_upcase),
+        (.value.total // "0"),
+        (.value.free // "0")
+      ]
+    | @tsv
+  ' 2>/dev/null)
+
+  if [ -z "$parsed_output" ]; then
     print_message "Не удалось получить список накопителей" "$RED"
     return 1
   fi
-  echo "00. Назад"
-  echo "0. Встроенное хранилище (может не хватить места) $message2"
 
-  while IFS= read -r line; do
-    value=$(select_drive_extract_value "$line")
-    case "$line" in
-    *"\"Media"*"\":"* | *"name: Media"*)
-      select_drive_reset_media
-      ;;
-    *"\"usb\":"* | *"usb:"*)
-      if [ "$media_found" = "1" ]; then
-        media_is_usb=1
-      fi
-      ;;
-    *"\"bus\":"* | *"bus:"*)
-      if [ "$media_found" = "1" ] && [ "$value" = "usb" ]; then
-        media_is_usb=1
-      fi
-      ;;
-    *"\"manufacturer\":"* | *"manufacturer:"*)
-      if [ "$media_found" = "1" ]; then
-        current_manufacturer="$value"
-      fi
-      ;;
-    *"\"uuid\":"* | *"uuid:"*)
-      if [ "$media_found" = "1" ] && [ "$media_is_usb" = "1" ]; then
-        select_drive_reset_partition
-        in_partition=1
-        uuid="$value"
-      fi
-      ;;
-    *"\"label\":"* | *"label:"*)
-      [ "$in_partition" = "1" ] && label="$value"
-      ;;
-    *"\"fstype\":"* | *"fstype:"*)
-      [ "$in_partition" = "1" ] && fstype="$value"
-      ;;
-    *"\"total\":"* | *"total:"*)
-      [ "$in_partition" = "1" ] && total_bytes="$value"
-      ;;
-    *"\"free\":"* | *"free:"*)
-      if [ "$in_partition" = "1" ]; then
-        free_bytes="$value"
-        select_drive_add_partition
-      fi
-      ;;
-    esac
+  while IFS=$(printf '\t') read -r uuid display_name fstype total_bytes free_bytes; do
+    [ -z "$uuid" ] && continue
+    echo "$total_bytes" | grep -qE '^[0-9]+$' || total_bytes=0
+    echo "$free_bytes" | grep -qE '^[0-9]+$' || free_bytes=0
+    used_bytes=$((total_bytes - free_bytes))
+    [ "$used_bytes" -lt 0 ] && used_bytes=0
+
+    echo "$index. $display_name ($fstype, $(format_size $used_bytes $total_bytes))"
+    if [ -n "$uuids" ]; then
+      uuids="$uuids
+$uuid"
+    else
+      uuids="$uuid"
+    fi
+    index=$((index + 1))
   done <<EOF
-$media_output
+$parsed_output
 EOF
 
   echo ""
@@ -811,7 +737,7 @@ packages_checker() {
 
 script_update() {
   local mode="${1:-interactive}"
-  packages_checker curl tar ca-certificates wget-ssl
+  packages_checker curl tar ca-certificates wget-ssl jq
   if opkg update && opkg install "$REPO"; then
     if [ "$mode" = "silent" ]; then
       logger -p notice -t KeenSnap "Пакет обновлён в silent-режиме"
