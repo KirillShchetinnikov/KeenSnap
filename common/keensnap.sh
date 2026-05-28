@@ -1,7 +1,6 @@
 #!/bin/sh
 trap cleanup HUP INT TERM EXIT
 CONFIG_FILE="/opt/root/KeenSnap/config.conf"
-[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 CYAN='\033[0;36m'
@@ -31,17 +30,20 @@ print_menu() {
                                      /_/      
 
 EOF
-  if [ ! -f $KEENSNAP_DIR/$SNAPD ]; then
-    printf "${RED}Конфигурация не настроена${NC}\n\n"
-  else
-    current_upload_methods=$(get_config_value "UPLOAD_METHOD")
-    current_backup_content=$(get_backup_content)
-    printf "${CYAN}Модель:         ${NC}%s\n" "$(get_device) ($(get_hw_id)) | $(get_fw_version)"
-    printf "${CYAN}Накопитель:     ${NC}%s\n" "$SELECTED_DRIVE"
-    printf "${CYAN}Отправка:       ${NC}%s\n" "$current_upload_methods"
-    printf "${CYAN}Состав:         ${NC}%s\n" "$current_backup_content"
-    printf "${CYAN}Версия:         ${NC}%s\n\n" "$SCRIPT_VERSION by ${USERNAME}"
+  current_drive=$(get_config_value "SELECTED_DRIVE")
+  current_upload_methods=$(get_config_value "UPLOAD_METHOD")
+  current_backup_content=$(get_backup_content)
+  printf "${CYAN}Модель:         ${NC}%s\n" "$(get_device) ($(get_hw_id)) | $(get_fw_version)"
+  if [ -n "$current_drive" ]; then
+    printf "${CYAN}Накопитель:     ${NC}%s\n" "$current_drive"
   fi
+  if [ -n "$current_upload_methods" ]; then
+    printf "${CYAN}Отправка:       ${NC}%s\n" "$current_upload_methods"
+  fi
+  if [ -n "$current_backup_content" ]; then
+    printf "${CYAN}Состав:         ${NC}%s\n" "$current_backup_content"
+  fi
+  printf "${CYAN}Версия:         ${NC}%s\n\n" "$SCRIPT_VERSION by ${USERNAME}"
   echo "1. Запустить бэкап"
   echo "2. Параметры"
   echo "3. Показать конфиг"
@@ -141,7 +143,6 @@ select_schedule() {
   local index=1
   local schedule_output
   local parsed_schedules
-
   packages_checker "jq" || return 1
 
   schedule_output=$(rci_request "show/sc/schedule")
@@ -175,20 +176,17 @@ EOF
     print_message "Расписания не найдены" "$RED"
     return 1
   fi
-
-  echo "0. Назад"
+  echo "00. Назад"
   echo ""
   read -p "$message " choice
   choice=$(echo "$choice" | tr -d ' \n\r')
-  [ "$choice" = "0" ] && return 1
+  [ "$choice" = "00" ] && return 1
 
   SCHEDULE_SELECTED=$(echo "$schedules" | tr ' ' '\n' | grep "^$choice:" | cut -d ':' -f2)
   if [ -z "$SCHEDULE_SELECTED" ]; then
     print_message "Неверный выбор" "$RED"
     return 1
   fi
-  print_message "Вы выбрали: $SCHEDULE_SELECTED" "$CYAN"
-
   return 0
 }
 
@@ -279,27 +277,11 @@ format_size() {
 setup_config() {
   mkdir -p "$KEENSNAP_DIR"
   if [ ! -f "$CONFIG_FILE" ]; then
-    print_message "Конфиг не найден. Переустановите пакет $REPO" "$RED"
+    print_message "Файл конфигурации не найден. Переустановите пакет $REPO" "$RED"
     return 1
   fi
 
   dos2unix "$CONFIG_FILE" >/dev/null 2>&1
-}
-
-setup_schedule() {
-  setup_config || return 1
-  if ! select_schedule "Выберите номер расписания:"; then
-    return 1
-  fi
-  sed -i "s|^SCHEDULE_NAME=.*|SCHEDULE_NAME=\"$SCHEDULE_SELECTED\"|" "$CONFIG_FILE"
-  if ! select_drive "Выберите накопитель для бэкапа:"; then
-    return 1
-  fi
-  sed -i "s|^SELECTED_DRIVE=.*|SELECTED_DRIVE=\"$selected_drive\"|" "$CONFIG_FILE"
-  print_message "Вы выбрали: $selected_drive" "$CYAN"
-
-  dos2unix "$CONFIG_FILE"
-  print_message "Конфигурация сохранена в $CONFIG_FILE" "$GREEN"
 }
 
 toggle_boolean_option() {
@@ -346,32 +328,36 @@ show_logs() {
 
 setup_upload_method() {
   check_config
-  printf "Текущий способ: %s\n\n" "$(get_config_value "UPLOAD_METHOD")"
-  echo "Введите номера через пробел (допустимо несколько):"
-  echo "1. Telegram"
-  echo "2. Google Drive"
-  echo "3. WebDAV"
-  echo "0. Назад"
-  echo ""
-  read -p "Выбор: " upload_choice
-  [ -z "$upload_choice" ] && return 0
-  [ "$upload_choice" = "0" ] && return 0
+  while true; do
+    printf "\033c"
+    printf "Текущий способ: %s\n\n" "$(get_config_value "UPLOAD_METHOD")"
+    echo "Введите номера через пробел (допустимо несколько):"
+    echo "0. Без отправки"
+    echo "1. Telegram"
+    echo "2. Google Drive"
+    echo "3. WebDAV"
+    echo "00. Назад"
+    echo ""
+    read -p "Выбор: " upload_choice
+    [ -z "$upload_choice" ] && return 0
+    [ "$upload_choice" = "00" ] && return 0
 
-  local selected_methods=""
-  for choice in $upload_choice; do
-    case "$choice" in
-      1) selected_methods="$selected_methods Telegram" ;;
-      2) selected_methods="$selected_methods GDrive" ;;
-      3) selected_methods="$selected_methods WebDAV" ;;
-    esac
+    local selected_methods=""
+    for choice in $upload_choice; do
+      case "$choice" in
+        0) selected_methods="$selected_methods" ;;
+        1) selected_methods="$selected_methods Telegram" ;;
+        2) selected_methods="$selected_methods GDrive" ;;
+        3) selected_methods="$selected_methods WebDAV" ;;
+      esac
+    done
+
+    selected_methods=$(echo "$selected_methods" | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++ { if (out) out=out","$0; else out=$0 } END { print out }')
+    [ -z "$selected_methods" ] && selected_methods="$current_method"
+    set_config_value "UPLOAD_METHOD" "$selected_methods"
+    UPLOAD_METHOD="$selected_methods"
+    dos2unix "$CONFIG_FILE"
   done
-
-  selected_methods=$(echo "$selected_methods" | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++ { if (out) out=out","$0; else out=$0 } END { print out }')
-  [ -z "$selected_methods" ] && selected_methods="$current_method"
-  set_config_value "UPLOAD_METHOD" "$selected_methods"
-  UPLOAD_METHOD="$selected_methods"
-  dos2unix "$CONFIG_FILE"
-  print_message "Способ загрузки обновлён" "$GREEN"
 }
 
 setup_telegram_settings() {
@@ -380,8 +366,10 @@ setup_telegram_settings() {
   current_chat=$(get_config_value "CHAT_ID")
   current_proxy_interface=$(get_config_value "PROXY_INTERFACE")
   current_proxy_url=$(get_config_value "TG_PROXY")
+  echo "00. Назад"
 
   read -p "BOT_TOKEN (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     current_token=""
   elif [ -n "$value" ]; then
@@ -389,6 +377,7 @@ setup_telegram_settings() {
   fi
 
   read -p "CHAT_ID (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     current_chat=""
   elif [ -n "$value" ]; then
@@ -396,6 +385,7 @@ setup_telegram_settings() {
   fi
 
   read -p "PROXY_INTERFACE (например nwg0, Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     current_proxy_interface=""
   elif [ -n "$value" ]; then
@@ -403,6 +393,7 @@ setup_telegram_settings() {
   fi
 
   read -p "TG_PROXY URL (например socks5://127.0.0.1:1080, Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     current_proxy_url=""
   elif [ -n "$value" ]; then
@@ -423,8 +414,10 @@ setup_google_drive_settings() {
   gd_secret=$(get_config_value "GD_CLIENT_SECRET")
   gd_refresh=$(get_config_value "GD_REFRESH_TOKEN")
   gd_folder=$(get_config_value "GD_FOLDER_ID")
+  echo "00. Назад"
 
   read -p "GD_CLIENT_ID (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     gd_id=""
   elif [ -n "$value" ]; then
@@ -432,6 +425,7 @@ setup_google_drive_settings() {
   fi
 
   read -p "GD_CLIENT_SECRET (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     gd_secret=""
   elif [ -n "$value" ]; then
@@ -439,6 +433,7 @@ setup_google_drive_settings() {
   fi
 
   read -p "GD_REFRESH_TOKEN (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     gd_refresh=""
   elif [ -n "$value" ]; then
@@ -446,6 +441,7 @@ setup_google_drive_settings() {
   fi
 
   read -p "GD_FOLDER_ID (Enter = оставить, '-' = очистить): " value
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     gd_folder=""
   elif [ -n "$value" ]; then
@@ -466,10 +462,10 @@ setup_webdav_settings() {
   wd_username=$(get_config_value "WD_USERNAME")
   wd_password=$(get_config_value "WD_PASSWORD")
   wd_insecure=$(get_config_bool "WD_INSECURE" "false")
-     echo "Введите 0 для возврата назад"
+  echo "00. Назад"
 
   read -p "WD_URL (полный путь, Enter = оставить, '-' = очистить): " value
-     [ "$value" = "0" ] && return 0
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     wd_url=""
   elif [ -n "$value" ]; then
@@ -477,7 +473,7 @@ setup_webdav_settings() {
   fi
 
   read -p "WD_USERNAME (Enter = оставить, '-' = очистить): " value
-     [ "$value" = "0" ] && return 0
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     wd_username=""
   elif [ -n "$value" ]; then
@@ -485,7 +481,7 @@ setup_webdav_settings() {
   fi
 
   read -p "WD_PASSWORD (Enter = оставить, '-' = очистить): " value
-     [ "$value" = "0" ] && return 0
+  [ "$value" = "00" ] && return 0
   if [ "$value" = "-" ]; then
     wd_password=""
   elif [ -n "$value" ]; then
@@ -493,7 +489,7 @@ setup_webdav_settings() {
   fi
 
   read -p "WD_INSECURE (true/false, Enter = оставить): " value
-     [ "$value" = "0" ] && return 0
+  [ "$value" = "00" ] && return 0
   if [ -n "$value" ]; then
     case "$value" in
       true|false) wd_insecure="$value" ;;
@@ -515,56 +511,67 @@ setup_webdav_settings() {
 
 setup_runtime_settings() {
   check_config
-  retain_days=$(get_config_raw "RETAIN_ARCHIVES_DAYS")
-  auto_update=$(get_config_raw "AUTO_UPDATE")
-  delete_archive=$(get_config_raw "DELETE_LOCAL_ARCHIVE_AFTER_BACKUP")
+  while true; do
+    printf "\033c"
+    printf "Параметры:\n\n"
+    retain_days=$(get_config_raw "RETAIN_ARCHIVES_DAYS")
+    auto_update=$(get_config_raw "AUTO_UPDATE")
+    delete_archive=$(get_config_raw "DELETE_LOCAL_ARCHIVE_AFTER_BACKUP")
 
-  printf "1. AUTO_UPDATE=$auto_update\n"
-  printf "2. RETAIN_ARCHIVES_DAYS=$retain_days\n"
-  printf "3. DELETE_LOCAL_ARCHIVE_AFTER_BACKUP=$delete_archive\n"
-  printf "4. ARCHIVE_PASSWORD=%s\n\n" "$(get_config_value "ARCHIVE_PASSWORD")"
-  printf "0. Назад\n\n"
-  read -p "Выберите параметр: " setting_choice
+    printf "1. AUTO_UPDATE=%s\n" "$auto_update"
+    printf "2. RETAIN_ARCHIVES_DAYS=%s\n" "$retain_days"
+    printf "3. DELETE_LOCAL_ARCHIVE_AFTER_BACKUP=%s\n" "$delete_archive"
+    printf "4. ARCHIVE_PASSWORD=%s\n" "$(get_config_value "ARCHIVE_PASSWORD")"
+    printf "5. ENTWARE_EXCLUDE=%s\n" "$(get_config_value "ENTWARE_EXCLUDE")"
+    printf "00. Назад\n\n"
+    read -p "Выберите параметр: " setting_choice
 
-  case "$setting_choice" in
-    0)
-      return 0
-      ;;
-    1)
-      toggle_boolean_option "AUTO_UPDATE"
-      ;;
-    2)
-      read -p "Введите число дней хранения локальных архивов (0 - отключить): " value
-      if echo "$value" | grep -Eq '^[0-9]+$'; then
-        set_config_number "RETAIN_ARCHIVES_DAYS" "$value"
-      fi
-      ;;
-    3)
-      toggle_boolean_option "DELETE_LOCAL_ARCHIVE_AFTER_BACKUP"
-      ;;
-    4)
-      read -p "Введите пароль для архива (Enter = оставить, '-' = очистить): " value
-      if [ "$value" = "-" ]; then
-        set_config_value "ARCHIVE_PASSWORD" ""
-      elif [ -n "$value" ]; then
-        set_config_value "ARCHIVE_PASSWORD" "$value"
-      fi
-      ;;
-  esac
+    case "$setting_choice" in
+      00) return 0 ;;
+      1) toggle_boolean_option "AUTO_UPDATE" ;;
+      2)
+        echo ""
+        read -p "Введите число дней хранения локальных архивов (0 - отключить): " value
+        if echo "$value" | grep -Eq '^[0-9]+$'; then
+          set_config_number "RETAIN_ARCHIVES_DAYS" "$value"
+        fi
+        ;;
+      3) toggle_boolean_option "DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" ;;
+      4)
+        echo ""
+        read -p "Введите пароль для архива (Enter = оставить, '-' = очистить): " value
+        if [ "$value" = "-" ]; then
+          set_config_value "ARCHIVE_PASSWORD" ""
+        elif [ -n "$value" ]; then
+          set_config_value "ARCHIVE_PASSWORD" "$value"
+        fi
+        ;;
+      5)
+        echo ""
+        read -p "Введите список директорий для исключения бэкапа (через пробел, например '/bin /var/log', Enter = оставить, '-' = очистить): " value
+        if [ "$value" = "-" ]; then
+          set_config_value "ENTWARE_EXCLUDE" ""
+        elif [ -n "$value" ]; then
+          set_config_value "ENTWARE_EXCLUDE" "$value"
+        fi
+        ;;
+      *) echo "Неверный выбор"; sleep 1 ;;
+    esac
 
-  dos2unix "$CONFIG_FILE"
-  print_message "Параметры обновлены" "$GREEN"
+    dos2unix "$CONFIG_FILE"
+  done
 }
 
 setup_backup_content() {
   check_config
   while true; do
+    printf "\033c"
     printf "Состав бэкапа:\n\n"
-    echo "1) BACKUP_STARTUP_CONFIG=$(get_config_bool "BACKUP_STARTUP_CONFIG" "false")"
-    echo "2) BACKUP_FIRMWARE=$(get_config_bool "BACKUP_FIRMWARE" "false")"
-    echo "3) BACKUP_ENTWARE=$(get_config_bool "BACKUP_ENTWARE" "false")"
-    echo "4) BACKUP_WG_PRIVATE_KEY=$(get_config_bool "BACKUP_WG_PRIVATE_KEY" "false")"
-    printf "0) Назад\n\n"
+    echo "1. BACKUP_STARTUP_CONFIG=$(get_config_bool "BACKUP_STARTUP_CONFIG" "false")"
+    echo "2. BACKUP_FIRMWARE=$(get_config_bool "BACKUP_FIRMWARE" "false")"
+    echo "3. BACKUP_ENTWARE=$(get_config_bool "BACKUP_ENTWARE" "false")"
+    echo "4. BACKUP_WG_PRIVATE_KEY=$(get_config_bool "BACKUP_WG_PRIVATE_KEY" "false")"
+    printf "00. Назад\n\n"
     read -p "Выберите параметр для переключения: " backup_choice
     echo ""
 
@@ -573,10 +580,47 @@ setup_backup_content() {
       2) toggle_boolean_option "BACKUP_FIRMWARE" ;;
       3) toggle_boolean_option "BACKUP_ENTWARE" ;;
       4) toggle_boolean_option "BACKUP_WG_PRIVATE_KEY" ;;
-      0) break ;;
+      00) break ;;
       *) echo "Неверный выбор" ;;
     esac
     dos2unix "$CONFIG_FILE"
+  done
+}
+
+setup_schedule_menu() {
+  check_config
+  while true; do
+    printf "\033c"
+    printf "Параметры расписания и накопителя:\n\n"
+    printf "1. Расписание: %s\n" "$(get_config_value "SCHEDULE_NAME")"
+    printf "2. Накопитель: %s\n" "$(get_config_value "SELECTED_DRIVE")"
+    printf "00. Назад\n\n"
+    read -p "Выберите параметр: " choice
+    echo ""
+    case "$choice" in
+      00)
+        return 0
+        ;;
+      1)
+        if ! select_schedule "Выберите номер расписания:"; then
+          :
+        else
+          if [ -n "$SCHEDULE_SELECTED" ]; then
+            sed -i "s|^SCHEDULE_NAME=.*|SCHEDULE_NAME=\"$SCHEDULE_SELECTED\"|" "$CONFIG_FILE"
+            dos2unix "$CONFIG_FILE"
+          fi
+        fi
+        ;;
+      2)
+        if ! select_drive "Выберите накопитель для бэкапа:"; then
+          :
+        else
+          sed -i "s|^SELECTED_DRIVE=.*|SELECTED_DRIVE=\"$selected_drive\"|" "$CONFIG_FILE"
+          dos2unix "$CONFIG_FILE"
+        fi
+        ;;
+      *) echo "Неверный выбор"; sleep 1 ;;
+    esac
   done
 }
 
@@ -592,19 +636,19 @@ settings_menu() {
     echo "5. WebDAV"
     echo "6. Состав бэкапа"
     echo "7. Автоудаление, обновления, пароль"
-    echo "0. Назад"
+    echo "00. Назад"
     echo ""
     read -p "Выберите действие: " action
     echo ""
     case "$action" in
-      1) setup_schedule ;;
+      1) setup_schedule_menu ;;
       2) setup_upload_method ;;
       3) setup_telegram_settings ;;
       4) setup_google_drive_settings ;;
       5) setup_webdav_settings ;;
       6) setup_backup_content ;;
       7) setup_runtime_settings ;;
-      0) break ;;
+      00) break ;;
       *) echo "Неверный выбор"; sleep 1 ;;
     esac
   done
@@ -635,8 +679,6 @@ select_drive() {
   local uuids=""
   local index=1
   media_output=$(rci_request "ls")
-
-  echo "00. Назад"
   echo "0. Встроенное хранилище (может не хватить места)"
 
   parsed_output=$(printf '%s\n' "$media_output" | jq -r '
@@ -651,11 +693,6 @@ select_drive() {
       ]
     | @tsv
   ' 2>/dev/null)
-
-  if [ -z "$parsed_output" ]; then
-    print_message "Не удалось получить список накопителей" "$RED"
-    return 1
-  fi
 
   while IFS=$(printf '\t') read -r uuid display_name fstype total_bytes free_bytes; do
     [ -z "$uuid" ] && continue
@@ -675,11 +712,9 @@ $uuid"
   done <<EOF
 $parsed_output
 EOF
-
-  echo ""
+  printf "00. Назад\n\n"
   read -p "$message " choice
   choice=$(echo "$choice" | tr -d ' \n\r')
-  echo ""
   if [ "$choice" = "00" ]; then
     return 1
   elif [ "$choice" = "0" ]; then
@@ -712,7 +747,7 @@ EOF
       if [ -z "$folder_choice" ] || [ "$folder_choice" = "0" ]; then
         break
       elif echo "$folder_choice" | grep -Eq '^[0-9]+$' && [ "$folder_choice" -ge 1 ] && [ "$folder_choice" -le "$folder_count" ]; then
-        eval "selected_drive=\"\${$folder_choice}\""
+        selected_drive=$(printf '%s\n' "$@" | sed -n "${folder_choice}p")
       elif [ "$folder_choice" = "00" ] && [ "$selected_drive" != "/tmp/mnt/$uuid" ]; then
         selected_drive=$(dirname "$selected_drive")
       else
