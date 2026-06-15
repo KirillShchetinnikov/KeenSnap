@@ -10,7 +10,7 @@
 # Автоустановка
 
 ```shell
-opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://KirillShchetinnikov.github.io/KeenSnap/install.sh | sh
+opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://gh.kipik1.ru/install.sh | sh
 ```
 
 ### Ручная установка
@@ -21,7 +21,7 @@ opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://
    ```
 2. Установите opkg-репозиторий в систему
    ```
-   curl -fsSL https://KirillShchetinnikov.github.io/KeenSnap/add-repo.sh | sh
+   curl -fsSL https://gh.kipik1.ru/add-repo.sh | sh
    ```
 
 3. Установите пакет
@@ -58,7 +58,7 @@ make feed
 `make keensnap-ipk` создаёт пакет `out/keensnap_<version>_all.ipk`.
 `make feed` создаёт структуру `out/feed/<arch>/Packages.gz` для публикации через GitHub Pages или другой HTTP-сервер.
 
-По умолчанию `add-repo.sh` использует `https://KirillShchetinnikov.github.io/KeenSnap`.
+По умолчанию `add-repo.sh` использует `https://gh.kipik1.ru`.
 Для другого адреса можно передать `FEED_URL`:
 
 ```

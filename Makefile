@@ -6,7 +6,8 @@ DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq, cron
 REPO_OWNER := KirillShchetinnikov
 REPO_NAME := KeenSnap
 REPO_URL := https://github.com/$(REPO_OWNER)/$(REPO_NAME)
-FEED_URL := https://$(REPO_OWNER).github.io/$(REPO_NAME)
+FEED_URL := https://gh.kipik1.ru
+PAGES_DOMAIN := gh.kipik1.ru
 FEED_ARCHES := aarch64-3.10 armv7-3.2 mips-3.4 mipsel-3.4
 IPK_FILE := $(PACKAGE)_$(VERSION)_all.ipk
 
@@ -68,6 +69,7 @@ feed: keensnap-ipk
 	rm -rf out/feed
 	mkdir -p out/feed
 	touch out/feed/.nojekyll
+	printf '%s\n' "$(PAGES_DOMAIN)" > out/feed/CNAME
 	cp add-repo.sh out/feed/add-repo.sh
 	cp install.sh out/feed/install.sh
 	for arch in $(FEED_ARCHES); do \

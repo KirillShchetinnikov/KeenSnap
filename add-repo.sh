@@ -2,7 +2,7 @@
 
 REPO_NAME="keensnap"
 REPO_FILE="/opt/etc/opkg/${REPO_NAME}.conf"
-FEED_URL="${FEED_URL:-https://KirillShchetinnikov.github.io/KeenSnap}"
+FEED_URL="${FEED_URL:-https://gh.kipik1.ru}"
 found=0
 opkg_repos=""
 
