@@ -1,7 +1,30 @@
 #!/bin/sh
 
-CONFIG_FILE="/opt/root/KeenSnap/config.conf"
-[ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
+CONFIG_DIR="/opt/etc/keensnap"
+DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
+CONFIG_FILE="$CONFIG_DIR/config.conf"
+
+normalize_path() {
+  local value="$1"
+  while [ "$value" != "/" ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  echo "$value"
+}
+
+load_config() {
+  if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
+    echo "Файл значений по умолчанию не найден: $DEFAULT_CONFIG_FILE"
+    exit 1
+  fi
+
+  . "$DEFAULT_CONFIG_FILE"
+  [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+  SELECTED_DRIVE=$(normalize_path "${SELECTED_DRIVE:-}")
+}
+
+load_config
 SCRIPT_VERSION=""
 PROJECT_URL="https://github.com/spatiumstas/keensnap"
 REMOTE_VERSION=$(curl -s "https://api.github.com/repos/spatiumstas/keensnap/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
@@ -93,16 +116,30 @@ statuses=""
 
       clean_log() {
         local log_file="$1"
-        local max_size=524288
+        local max_size_kb="${LOG_MAX_SIZE_KB:-512}"
+        local max_size
+        local tmp_log
 
-        if [ ! -f $log_file ]; then
-          touch $log_file
+        if ! echo "$max_size_kb" | grep -Eq '^[0-9]+$'; then
+          log "LOG_MAX_SIZE_KB задан некорректно: $max_size_kb. Ротация лога отключена"
+          return 0
+        fi
+
+        if [ "$max_size_kb" -eq 0 ]; then
+          return 0
+        fi
+
+        max_size=$((max_size_kb * 1024))
+
+        if [ ! -f "$log_file" ]; then
+          touch "$log_file"
         fi
 
         local current_size=$(wc -c <"$log_file")
-        if [ $current_size -gt $max_size ]; then
-          sed -i '1,100d' "$log_file"
-          log "Лог-файл был обрезан на первые 100 строк."
+        if [ "$current_size" -gt "$max_size" ]; then
+          tmp_log="${log_file}.tmp"
+          tail -n 400 "$log_file" >"$tmp_log" && mv "$tmp_log" "$log_file"
+          log "Лог-файл был обрезан до последних 400 строк (лимит: ${max_size_kb} KiB)."
         fi
       }
 
@@ -126,6 +163,10 @@ statuses=""
 
       escape_html() {
         printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+      }
+
+      sanitize_filename() {
+        printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'
       }
 
       execute_telegram_request() {
@@ -285,6 +326,149 @@ statuses=""
         return 1
       }
 
+      rotate_s3_backups() {
+        local config_file="$1"
+        local retain="${S3_RETAIN_BACKUPS:-0}"
+        local s3_prefix="${S3_PREFIX:-}"
+        local s3_base_uri
+        local list_output
+        local list_rc
+        local archive_list
+        local archive_count
+        local delete_count
+        local old_uri
+        local archive_device_id
+
+        if ! echo "$retain" | grep -Eq '^[0-9]+$'; then
+          log "S3_RETAIN_BACKUPS задан некорректно: $retain. Ротация S3 пропущена"
+          return 0
+        fi
+
+        [ "$retain" -eq 0 ] && return 0
+
+        s3_prefix="${s3_prefix#/}"
+        s3_prefix="${s3_prefix%/}"
+        if [ -n "$s3_prefix" ]; then
+          s3_base_uri="s3://$S3_BUCKET_NAME/$s3_prefix/"
+        else
+          s3_base_uri="s3://$S3_BUCKET_NAME/"
+        fi
+
+        list_output=$(s3cmd -c "$config_file" ls "$s3_base_uri" 2>&1)
+        list_rc=$?
+        if [ "$list_rc" -ne 0 ]; then
+          error "Не удалось получить список S3-архивов для ротации. Ответ: $list_output"
+          return 0
+        fi
+
+        archive_device_id=$(sanitize_filename "$DEVICE_ID")
+        archive_list=$(echo "$list_output" | awk '{print $4}' | grep -E "/${archive_device_id}_backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}_fw-.+\\.(tar\\.gz|7z)$" | sort)
+        archive_count=$(echo "$archive_list" | sed '/^$/d' | wc -l)
+
+        if [ "$archive_count" -le "$retain" ]; then
+          return 0
+        fi
+
+        delete_count=$((archive_count - retain))
+        log "S3-ротация: удаление старых архивов: $delete_count"
+
+        echo "$archive_list" | head -n "$delete_count" | while IFS= read -r old_uri; do
+          [ -z "$old_uri" ] && continue
+          if s3cmd -c "$config_file" del "$old_uri" >/dev/null 2>&1; then
+            log "Удалён старый S3-архив: $old_uri"
+          else
+            error "Не удалось удалить старый S3-архив: $old_uri"
+          fi
+        done
+      }
+
+      send_to_s3() {
+        local file_path="$1"
+        local file_name
+        local endpoint_host
+        local use_https="True"
+        local config_file="/tmp/keensnap-s3cmd-$$.conf"
+        local s3_uri
+        local s3_prefix
+        local s3_output
+        local s3_rc
+        local retry_count=0
+        local max_retries=3
+        local retry_delay=5
+
+        if [ -z "$S3_ENDPOINT" ] || [ -z "$S3_BUCKET_NAME" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
+          log "S3_ENDPOINT/S3_BUCKET_NAME/S3_KEY/S3_SECRET не заданы. Отправка в S3 пропущена."
+          return 0
+        fi
+
+        if ! command -v s3cmd >/dev/null 2>&1; then
+          error "s3cmd не установлен. Переустановите пакет keensnap."
+          return 1
+        fi
+
+        file_name=$(basename "$file_path")
+        s3_prefix="${S3_PREFIX:-}"
+        s3_prefix="${s3_prefix#/}"
+        s3_prefix="${s3_prefix%/}"
+        if [ -n "$s3_prefix" ]; then
+          s3_uri="s3://$S3_BUCKET_NAME/$s3_prefix/$file_name"
+        else
+          s3_uri="s3://$S3_BUCKET_NAME/$file_name"
+        fi
+        endpoint_host="$S3_ENDPOINT"
+
+        case "$endpoint_host" in
+          http://*)
+            use_https="False"
+            endpoint_host="${endpoint_host#http://}"
+            ;;
+          https://*)
+            endpoint_host="${endpoint_host#https://}"
+            ;;
+        esac
+        endpoint_host="${endpoint_host%%/*}"
+        endpoint_host="${endpoint_host%/}"
+
+        if [ -z "$endpoint_host" ]; then
+          error "S3_ENDPOINT задан некорректно"
+          return 1
+        fi
+
+        cat >"$config_file" <<EOF
+[default]
+access_key = $S3_KEY
+secret_key = $S3_SECRET
+host_base = $endpoint_host
+host_bucket = $endpoint_host
+use_https = $use_https
+EOF
+        chmod 600 "$config_file"
+
+        log "Отправка архива в S3: $s3_uri"
+
+        while [ $retry_count -lt $max_retries ]; do
+          s3_output=$(s3cmd -c "$config_file" put "$file_path" "$s3_uri" 2>&1)
+          s3_rc=$?
+
+          if [ $s3_rc -eq 0 ]; then
+            success "Архив загружен в S3"
+            rotate_s3_backups "$config_file"
+            rm -f "$config_file"
+            return 0
+          fi
+
+          error "Ошибка загрузки в S3 (code $s3_rc). Ответ: $s3_output"
+          retry_count=$((retry_count + 1))
+          if [ $retry_count -lt $max_retries ]; then
+            log "Повторная попытка загрузки в S3... (попытка $retry_count из $max_retries)"
+            sleep $retry_delay
+          fi
+        done
+
+        rm -f "$config_file"
+        return 1
+      }
+
       send_archive_by_method() {
         local report="$1"
         local archive_path="$2"
@@ -322,6 +506,13 @@ statuses=""
                 error "Ошибка отправки в WebDAV"
               fi
               ;;
+            S3)
+              if send_to_s3 "$archive_path"; then
+                sent_count=$((sent_count + 1))
+              else
+                error "Ошибка отправки в S3"
+              fi
+              ;;
             *)
               error "Неизвестный метод отправки: $method"
               ;;
@@ -347,6 +538,7 @@ statuses=""
       cleanup_old_archives() {
         local old_count=0
         local old_list
+        local archive_device_id
 
         if [ -z "$RETAIN_ARCHIVES_DAYS" ]; then
           return 0
@@ -362,7 +554,8 @@ statuses=""
           return 0
         fi
 
-        old_list=$(find "$SELECTED_DRIVE" -maxdepth 1 -type f -name "${DEVICE_ID}_*backup*.tar.gz" -mtime +"$RETAIN_ARCHIVES_DAYS" 2>/dev/null)
+        archive_device_id=$(sanitize_filename "$DEVICE_ID")
+        old_list=$(find "$SELECTED_DRIVE" -maxdepth 1 -type f \( -name "${archive_device_id}_backup_*.tar.gz" -o -name "${archive_device_id}_backup_*.7z" \) -mtime +"$RETAIN_ARCHIVES_DAYS" 2>/dev/null)
         if [ -z "$old_list" ]; then
           return 0
         fi
@@ -583,7 +776,6 @@ statuses=""
       backup_wg_private_key() {
         local success=1
         local item_name="WireGuard-Private-Key"
-        package_check "wireguard-tools"
         if [ -n "$SELECTED_DRIVE" ]; then
           log "Бэкап $item_name..."
           local folder_path="$SELECTED_DRIVE/$date"
@@ -653,6 +845,8 @@ statuses=""
         fi
 
         local archive_path
+        local archive_device_id
+        local archive_fw_version
         if [ -n "$SELECTED_DRIVE" ] && [ -d "$SELECTED_DRIVE/$date" ]; then
           cp "$LOG_FILE" "$SELECTED_DRIVE/$date/backup_log.txt"
           cat >"$SELECTED_DRIVE/$date/backup_meta.info" <<EOF
@@ -666,11 +860,15 @@ UPLOAD_METHOD="$UPLOAD_METHOD"
 EOF
           if [ -n "$ARCHIVE_PASSWORD" ]; then
             package_check "7-zip"
-            archive_path="$SELECTED_DRIVE/${DEVICE_ID}_${FW_VERSION}_$date.7z"
+            archive_device_id=$(sanitize_filename "$DEVICE_ID")
+            archive_fw_version=$(sanitize_filename "$FW_VERSION")
+            archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.7z"
             log "Создание архива с паролем..."
             7zz a -t7z -mx=9 -p"$ARCHIVE_PASSWORD" "$archive_path" "$SELECTED_DRIVE/$date"
           else
-            archive_path="$SELECTED_DRIVE/${DEVICE_ID}_${FW_VERSION}_$date.tar.gz"
+            archive_device_id=$(sanitize_filename "$DEVICE_ID")
+            archive_fw_version=$(sanitize_filename "$FW_VERSION")
+            archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.tar.gz"
             log "Создание архива..."
             tar -czf "$archive_path" -C "$SELECTED_DRIVE" "$date"
           fi

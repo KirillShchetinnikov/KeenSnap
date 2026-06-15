@@ -1,7 +1,9 @@
 #!/bin/sh
 trap cleanup HUP INT TERM
 
-CONFIG_FILE="/opt/root/KeenSnap/config.conf"
+CONFIG_DIR="/opt/etc/keensnap"
+DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
+CONFIG_FILE="$CONFIG_DIR/config.conf"
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 CYAN='\033[0;36m'
@@ -27,15 +29,18 @@ KeenSnap ${SCRIPT_VERSION}
   help, -h, --help      Показать эту справку
   version              Показать версию
   status               Показать краткий статус устройства и конфигурации
-  config               Вывести $CONFIG_FILE
+  config               Вывести пользовательский конфиг и недостающие дефолты
   logs                 Вывести $LOG_FILE
   apply                Применить $CONFIG_FILE и обновить cron
   backup               Запустить бэкап вручную
   update               Обновить пакет через opkg
 
 Конфигурация:
-  Все параметры задаются только в файле:
+  В пользовательском файле указываются только изменённые параметры:
     $CONFIG_FILE
+
+  Значения по умолчанию находятся в:
+    $DEFAULT_CONFIG_FILE
 
   Расписание задаётся в cron-синтаксисе из 5 полей:
     CRON_SCHEDULE="0 3 * * *"
@@ -76,12 +81,23 @@ get_hw_id() {
 
 get_config_raw() {
   local key="$1"
-  grep "^$key=" "$CONFIG_FILE" 2>/dev/null | head -n 1 | cut -d '=' -f2-
+  {
+    grep "^$key=" "$CONFIG_FILE" 2>/dev/null
+    grep "^$key=" "$DEFAULT_CONFIG_FILE" 2>/dev/null
+  } | head -n 1 | cut -d '=' -f2-
 }
 
 get_config_value() {
   local key="$1"
   get_config_raw "$key" | sed 's/^"//;s/"$//'
+}
+
+normalize_path() {
+  local value="$1"
+  while [ "$value" != "/" ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  echo "$value"
 }
 
 get_config_bool() {
@@ -116,14 +132,22 @@ get_backup_content() {
 
 setup_config() {
   mkdir -p "$KEENSNAP_DIR"
+  mkdir -p "$CONFIG_DIR"
+  if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
+    print_message "Файл значений по умолчанию не найден. Переустановите пакет $REPO" "$RED"
+    return 1
+  fi
+
   if [ ! -f "$CONFIG_FILE" ]; then
     print_message "Файл конфигурации не найден. Переустановите пакет $REPO" "$RED"
     return 1
   fi
 
   if command -v dos2unix >/dev/null 2>&1; then
+    dos2unix "$DEFAULT_CONFIG_FILE" >/dev/null 2>&1
     dos2unix "$CONFIG_FILE" >/dev/null 2>&1
   else
+    sed -i 's/\r$//' "$DEFAULT_CONFIG_FILE"
     sed -i 's/\r$//' "$CONFIG_FILE"
   fi
 }
@@ -147,7 +171,7 @@ show_status() {
   hw_id=$(get_hw_id)
   fw_version=$(get_fw_version)
   cron_schedule=$(get_config_value "CRON_SCHEDULE")
-  selected_drive=$(get_config_value "SELECTED_DRIVE")
+  selected_drive=$(normalize_path "$(get_config_value "SELECTED_DRIVE")")
   upload_methods=$(get_config_value "UPLOAD_METHOD")
   backup_content=$(get_backup_content)
 
@@ -170,13 +194,31 @@ show_status() {
 
 show_config() {
   check_config
+  local line
+  local key
+
+  printf '%s\n' "# Пользовательский конфиг: $CONFIG_FILE"
   cat "$CONFIG_FILE"
+  printf '\n%s\n' "# Дефолтные параметры, не указанные в пользовательском конфиге: $DEFAULT_CONFIG_FILE"
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      [A-Za-z_]*=*)
+        key=${line%%=*}
+        if ! grep -q "^$key=" "$CONFIG_FILE" 2>/dev/null; then
+          printf '%s\n' "$line"
+        fi
+        ;;
+    esac
+  done <"$DEFAULT_CONFIG_FILE"
 }
 
 show_logs() {
   check_config
-  if [ -f "$LOG_FILE" ]; then
-    cat "$LOG_FILE"
+  local log_file
+  log_file=$(get_config_value "LOG_FILE")
+  if [ -f "$log_file" ]; then
+    cat "$log_file"
   else
     echo "Лог-файл пока не создан"
   fi

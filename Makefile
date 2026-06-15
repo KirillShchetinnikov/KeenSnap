@@ -2,7 +2,7 @@ SHELL := /bin/bash
 VERSION := $(shell cat VERSION)
 PACKAGE := keensnap
 ROOT_DIR := /opt
-DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq, cron
+DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq, cron, wireguard-tools, python3, python3-pip
 REPO_OWNER := KirillShchetinnikov
 REPO_NAME := KeenSnap
 REPO_URL := https://github.com/$(REPO_OWNER)/$(REPO_NAME)
@@ -47,11 +47,13 @@ _pkg-ipk:
 	cd out/$(BUILD_DIR)/control; tar czvf ../control.tar.gz .; cd ../../..
 
 	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap
+	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap
 	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/bin
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap-init > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap.sh > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
 	cp common/keensnap-bin out/$(BUILD_DIR)/data$(ROOT_DIR)/bin/keensnap
-	cp common/config.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/config.conf
+	cp common/defaults.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/defaults.conf
+	cp common/config.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/config.conf
 	find out/$(BUILD_DIR)/data$(ROOT_DIR) -type f -exec sed -i 's/\r$$//' {} +
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
