@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 VERSION := $(shell cat VERSION)
 PACKAGE := keensnap
-ROOT_DIR :=
+ROOT_DIR := /opt
 DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq, cron
 REPO_OWNER := KirillShchetinnikov
 REPO_NAME := KeenSnap
@@ -60,7 +60,7 @@ _pkg-ipk:
 
 	echo 2.0 > out/$(BUILD_DIR)/debian-binary
 	cd out/$(BUILD_DIR); \
-	ar r ../$(IPK_FILE) debian-binary control.tar.gz data.tar.gz; \
+	tar czvf ../$(IPK_FILE) ./debian-binary ./data.tar.gz ./control.tar.gz; \
 	cd ../..
 
 keensnap-ipk:
