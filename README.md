@@ -65,7 +65,7 @@ make feed
 FEED_URL="https://example.com/keensnap" sh add-repo.sh
 ```
 
-В репозитории есть workflow `.github/workflows/publish-feed.yml`: он запускает `make feed` и публикует `out/feed` в GitHub Pages. В настройках GitHub Pages нужно выбрать источник `GitHub Actions`.
+В репозитории есть workflow `.github/workflows/publish-feed.yml`: он запускает `make feed` и публикует `out/feed` в ветку `gh-pages`. В настройках GitHub Pages нужно один раз выбрать источник `Deploy from a branch`, ветку `gh-pages`, директорию `/`.
 
 <details>
   <summary>Подключение Telegram</summary>
