@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 VERSION := $(shell cat VERSION)
 PACKAGE := keensnap
-ROOT_DIR := /opt
+ROOT_DIR :=
 DEPENDENCIES := curl, tar, ca-certificates, wget-ssl, jq, cron
 REPO_OWNER := KirillShchetinnikov
 REPO_NAME := KeenSnap

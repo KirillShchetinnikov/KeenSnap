@@ -2,6 +2,7 @@
 
 
 rm -f "/opt/bin/keensnap"
+rm -f "/opt/opt/bin/keensnap"
 rm -f "/opt/etc/ndm/schedule.d/99-keensnap.sh"
 if [ -f "/opt/etc/crontab" ]; then
   sed -i "\|# KeenSnap|d" "/opt/etc/crontab"

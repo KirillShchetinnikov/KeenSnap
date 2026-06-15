@@ -21,6 +21,17 @@ print_message() {
 
 mkdir -p "$KEENSNAP_DIR"
 mkdir -p "$(dirname "$BIN_LINK")"
+
+if [ -d "/opt/opt/root/KeenSnap" ] && [ ! -f "$SCRIPT" ]; then
+  cp -f /opt/opt/root/KeenSnap/keensnap.sh "$SCRIPT" 2>/dev/null || true
+  cp -f /opt/opt/root/KeenSnap/keensnap-init "$INIT_SCRIPT" 2>/dev/null || true
+  cp -f /opt/opt/root/KeenSnap/config.conf "$CONFIG_FILE" 2>/dev/null || true
+fi
+
+if [ -f "/opt/opt/bin/keensnap" ] && [ ! -f "$BIN_LINK" ]; then
+  cp -f /opt/opt/bin/keensnap "$BIN_LINK" 2>/dev/null || true
+fi
+
 chmod +x "$SCRIPT" 2>/dev/null
 chmod +x "$INIT_SCRIPT" 2>/dev/null
 chmod +x "$BIN_LINK" 2>/dev/null
