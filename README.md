@@ -10,7 +10,7 @@
 # Автоустановка
 
 ```shell
-opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://raw.githubusercontent.com/spatiumstas/keensnap/main/install.sh | sh
+opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://KirillShchetinnikov.github.io/KeenSnap/install.sh | sh
 ```
 
 ### Ручная установка
@@ -21,7 +21,7 @@ opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://
    ```
 2. Установите opkg-репозиторий в систему
    ```
-   curl -fsSL https://raw.githubusercontent.com/spatiumstas/feedly/main/add-repo.sh | sh
+   curl -fsSL https://KirillShchetinnikov.github.io/KeenSnap/add-repo.sh | sh
    ```
 
 3. Установите пакет
@@ -33,8 +33,39 @@ opkg update && opkg install curl ca-certificates wget-ssl && curl -fsSL https://
 1. Откройте `/opt/root/KeenSnap/config.conf`.
 2. Заполните параметры бэкапа, отправки и накопителя в этом файле.
 3. Задайте расписание в `CRON_SCHEDULE` в стандартном cron-синтаксисе из 5 полей, например `CRON_SCHEDULE="0 3 * * *"`.
-4. Запустите `keensnap` и выберите `Применить конфиг`, либо переустановите пакет: cron-запись будет создана из `CRON_SCHEDULE`.
+4. Выполните `keensnap apply`, либо переустановите пакет: cron-запись будет создана из `CRON_SCHEDULE`.
 5. Для отключения автоматического запуска оставьте `CRON_SCHEDULE=""`.
+
+## Команды
+
+```
+keensnap help      # справка
+keensnap status    # краткий статус
+keensnap config    # вывести конфиг
+keensnap logs      # вывести лог
+keensnap apply     # применить конфиг и обновить cron
+keensnap backup    # запустить бэкап вручную
+keensnap update    # обновить пакет через opkg
+```
+
+## Сборка IPK и opkg-репозитория
+
+```
+make keensnap-ipk
+make feed
+```
+
+`make keensnap-ipk` создаёт пакет `out/keensnap_<version>_all.ipk`.
+`make feed` создаёт структуру `out/feed/<arch>/Packages.gz` для публикации через GitHub Pages или другой HTTP-сервер.
+
+По умолчанию `add-repo.sh` использует `https://KirillShchetinnikov.github.io/KeenSnap`.
+Для другого адреса можно передать `FEED_URL`:
+
+```
+FEED_URL="https://example.com/keensnap" sh add-repo.sh
+```
+
+В репозитории есть workflow `.github/workflows/publish-feed.yml`: он запускает `make feed` и публикует `out/feed` в GitHub Pages. В настройках GitHub Pages нужно выбрать источник `GitHub Actions`.
 
 <details>
   <summary>Подключение Telegram</summary>
@@ -69,5 +100,5 @@ opkg remove keensnap
 ```
 #### Репозитория
 ```
-rm /opt/etc/opkg/feedly.conf
+rm /opt/etc/opkg/keensnap.conf
 ```

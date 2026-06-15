@@ -4,6 +4,6 @@ printf "\033c"
 set -e
 
 printf "\nУстанавливаю репозиторий\n\n"
-curl -fsSL https://raw.githubusercontent.com/spatiumstas/feedly/main/add-repo.sh | sh
+curl -fsSL https://KirillShchetinnikov.github.io/KeenSnap/add-repo.sh | sh
 printf "\n\nНачинаю установку\n\n"
 opkg update && opkg install keensnap
