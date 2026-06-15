@@ -14,7 +14,8 @@ OPT_DIR="/opt"
 STORAGE_DIR="/storage"
 KEENSNAP_DIR="/opt/root/KeenSnap"
 SNAPD="keensnap-init"
-PATH_SCHEDULE="/opt/etc/ndm/schedule.d/99-keensnap.sh"
+CRON_FILE="/opt/etc/crontab"
+CRON_MARKER="# KeenSnap"
 KEENSNAP_REPO_FILE="/opt/etc/opkg/keensnap.conf"
 SCRIPT_VERSION=""
 
@@ -31,9 +32,13 @@ print_menu() {
 
 EOF
   current_drive=$(get_config_value "SELECTED_DRIVE")
+  current_cron=$(get_config_value "CRON_SCHEDULE")
   current_upload_methods=$(get_config_value "UPLOAD_METHOD")
   current_backup_content=$(get_backup_content)
   printf "${CYAN}Модель:         ${NC}%s\n" "$(get_device) ($(get_hw_id)) | $(get_fw_version)"
+  if [ -n "$current_cron" ]; then
+    printf "${CYAN}Cron:           ${NC}%s\n" "$current_cron"
+  fi
   if [ -n "$current_drive" ]; then
     printf "${CYAN}Накопитель:     ${NC}%s\n" "$current_drive"
   fi
@@ -45,7 +50,7 @@ EOF
   fi
   printf "${CYAN}Версия:         ${NC}%s\n\n" "$SCRIPT_VERSION by ${USERNAME}"
   echo "1. Запустить бэкап"
-  echo "2. Параметры"
+  echo "2. Применить конфиг"
   echo "3. Показать конфиг"
   echo "4. Показать логи"
   printf "\n99. Обновить скрипт\n"  
@@ -68,7 +73,7 @@ main_menu() {
     fi
     case "$choice" in
     1) manual_backup ;;
-    2) settings_menu ;;
+    2) apply_config_interactive ;;
     3) show_config ;;
     4) show_logs ;;
     99) script_update "interactive" ;;
@@ -135,59 +140,6 @@ get_backup_content() {
   done
 
   [ -n "$selected" ] && echo "$selected"
-}
-
-select_schedule() {
-  local message="$1"
-  local schedules=""
-  local index=1
-  local schedule_output
-  local parsed_schedules
-  packages_checker "jq" || return 1
-
-  schedule_output=$(rci_request "show/sc/schedule")
-
-  if [ -z "$schedule_output" ]; then
-    print_message "Расписания не найдены" "$RED"
-    return 1
-  fi
-
-  parsed_schedules=$(printf '%s\n' "$schedule_output" | jq -r '
-    to_entries[]
-    | select(.key | startswith("schedule"))
-    | [(.key // ""), (.value.description // "")]
-    | @tsv
-  ' 2>/dev/null)
-
-  while IFS=$(printf '\t') read -r name desc; do
-    [ -z "$name" ] && continue
-    if [ -n "$desc" ]; then
-      echo "$index. $name ($desc)"
-    else
-      echo "$index. $name"
-    fi
-    schedules="$schedules $index:$name"
-    index=$((index + 1))
-  done <<EOF
-$parsed_schedules
-EOF
-
-  if [ -z "$schedules" ]; then
-    print_message "Расписания не найдены" "$RED"
-    return 1
-  fi
-  echo "00. Назад"
-  echo ""
-  read -p "$message " choice
-  choice=$(echo "$choice" | tr -d ' \n\r')
-  [ "$choice" = "00" ] && return 1
-
-  SCHEDULE_SELECTED=$(echo "$schedules" | tr ' ' '\n' | grep "^$choice:" | cut -d ':' -f2)
-  if [ -z "$SCHEDULE_SELECTED" ]; then
-    print_message "Неверный выбор" "$RED"
-    return 1
-  fi
-  return 0
 }
 
 get_config_raw() {
@@ -322,6 +274,58 @@ show_logs() {
     cat "/opt/var/log/keensnap.log"
   else
     echo "Лог-файл пока не создан"
+  fi
+  exit_function
+}
+
+validate_cron_schedule() {
+  local cron_schedule="$1"
+  set -f
+  set -- $cron_schedule
+  set +f
+  [ "$#" -eq 5 ]
+}
+
+restart_cron() {
+  if [ -x "/opt/etc/init.d/S10cron" ]; then
+    /opt/etc/init.d/S10cron restart >/dev/null 2>&1 && return 0
+    /opt/etc/init.d/S10cron start >/dev/null 2>&1 && return 0
+  fi
+
+  if command -v crond >/dev/null 2>&1; then
+    killall crond >/dev/null 2>&1
+    crond >/dev/null 2>&1 && return 0
+  fi
+
+  return 1
+}
+
+apply_cron_schedule() {
+  local cron_schedule
+  cron_schedule=$(get_config_value "CRON_SCHEDULE")
+
+  if [ -n "$cron_schedule" ] && ! validate_cron_schedule "$cron_schedule"; then
+    print_message "CRON_SCHEDULE должен содержать 5 cron-полей" "$RED"
+    return 1
+  fi
+
+  mkdir -p "$(dirname "$CRON_FILE")"
+  touch "$CRON_FILE"
+  sed -i "\|$CRON_MARKER|d" "$CRON_FILE"
+
+  if [ -n "$cron_schedule" ]; then
+    printf '%s %s start cron %s\n' "$cron_schedule" "$KEENSNAP_DIR/$SNAPD" "$CRON_MARKER" >>"$CRON_FILE"
+  fi
+
+  restart_cron
+}
+
+apply_config_interactive() {
+  check_config
+  if apply_cron_schedule; then
+    print_message "Конфиг применён" "$GREEN"
+  else
+    print_message "Конфиг не применён" "$RED"
   fi
   exit_function
 }
@@ -584,73 +588,6 @@ setup_backup_content() {
       *) echo "Неверный выбор" ;;
     esac
     dos2unix "$CONFIG_FILE"
-  done
-}
-
-setup_schedule_menu() {
-  check_config
-  while true; do
-    printf "\033c"
-    printf "Параметры расписания и накопителя:\n\n"
-    printf "1. Расписание: %s\n" "$(get_config_value "SCHEDULE_NAME")"
-    printf "2. Накопитель: %s\n" "$(get_config_value "SELECTED_DRIVE")"
-    printf "00. Назад\n\n"
-    read -p "Выберите параметр: " choice
-    echo ""
-    case "$choice" in
-      00)
-        return 0
-        ;;
-      1)
-        if ! select_schedule "Выберите номер расписания:"; then
-          :
-        else
-          if [ -n "$SCHEDULE_SELECTED" ]; then
-            sed -i "s|^SCHEDULE_NAME=.*|SCHEDULE_NAME=\"$SCHEDULE_SELECTED\"|" "$CONFIG_FILE"
-            dos2unix "$CONFIG_FILE"
-          fi
-        fi
-        ;;
-      2)
-        if ! select_drive "Выберите накопитель для бэкапа:"; then
-          :
-        else
-          sed -i "s|^SELECTED_DRIVE=.*|SELECTED_DRIVE=\"$selected_drive\"|" "$CONFIG_FILE"
-          dos2unix "$CONFIG_FILE"
-        fi
-        ;;
-      *) echo "Неверный выбор"; sleep 1 ;;
-    esac
-  done
-}
-
-settings_menu() {
-  check_config
-  while true; do
-    printf "\033c"
-    printf "Параметры KeenSnap:\n\n"
-    echo "1. Расписание и накопитель"
-    echo "2. Способ отправки"
-    echo "3. Telegram"
-    echo "4. Google Drive"
-    echo "5. WebDAV"
-    echo "6. Состав бэкапа"
-    echo "7. Автоудаление, обновления, пароль"
-    echo "00. Назад"
-    echo ""
-    read -p "Выберите действие: " action
-    echo ""
-    case "$action" in
-      1) setup_schedule_menu ;;
-      2) setup_upload_method ;;
-      3) setup_telegram_settings ;;
-      4) setup_google_drive_settings ;;
-      5) setup_webdav_settings ;;
-      6) setup_backup_content ;;
-      7) setup_runtime_settings ;;
-      00) break ;;
-      *) echo "Неверный выбор"; sleep 1 ;;
-    esac
   done
 }
 

@@ -3,7 +3,6 @@
 CONFIG_FILE="/opt/root/KeenSnap/config.conf"
 [ -f "$CONFIG_FILE" ] && source "$CONFIG_FILE"
 SCRIPT_VERSION=""
-PATH_SNAPD="/opt/etc/ndm/schedule.d/99-keensnap.sh"
 PROJECT_URL="https://github.com/spatiumstas/keensnap"
 REMOTE_VERSION=$(curl -s "https://api.github.com/repos/spatiumstas/keensnap/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
 RELEASE_NOTES="$PROJECT_URL/releases/tag"
@@ -731,7 +730,7 @@ EOF
       main() {
         clean_log "$LOG_FILE"
         get_device_info
-        log "Запуск скрипта для расписания $SCHEDULE"
+        log "Запуск скрипта: $SCHEDULE"
         local drive_uuid=$(basename "$SELECTED_DRIVE")
         local device_uuid=$(echo "$SELECTED_DRIVE" | awk -F'/' '{print $4}')
         if [ -z "$SELECTED_DRIVE" ] || ([ "$SELECTED_DRIVE" != "/storage" ] && rci_request "ls" 2>/dev/null | grep -q "\"$device_uuid\":") && [ ! -d "$SELECTED_DRIVE" ]; then
