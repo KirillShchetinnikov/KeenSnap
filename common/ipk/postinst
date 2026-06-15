@@ -23,6 +23,11 @@ print_message() {
   printf "${color}\n+${border}+\n| ${message} |\n+${border}+\n${NC}\n"
 }
 
+fix_cron_file_permissions() {
+  chown root:root "$CRON_FILE" 2>/dev/null || chown 0:0 "$CRON_FILE" 2>/dev/null || return 1
+  chmod 600 "$CRON_FILE" 2>/dev/null || return 1
+}
+
 install_s3cmd() {
   if command -v s3cmd >/dev/null 2>&1; then
     return 0
@@ -95,6 +100,7 @@ if [ -f "$CONFIG_FILE" ]; then
       print_message "CRON_SCHEDULE должен содержать 5 cron-полей" "$RED"
     fi
   fi
+  fix_cron_file_permissions || print_message "Не удалось установить владельца root:root для $CRON_FILE" "$RED"
   if [ -x "/opt/etc/init.d/S10cron" ]; then
     /opt/etc/init.d/S10cron restart >/dev/null 2>&1 || /opt/etc/init.d/S10cron start >/dev/null 2>&1
   elif command -v crond >/dev/null 2>&1; then

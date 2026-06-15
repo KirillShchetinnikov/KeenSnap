@@ -246,6 +246,11 @@ restart_cron() {
   return 1
 }
 
+fix_cron_file_permissions() {
+  chown root:root "$CRON_FILE" 2>/dev/null || chown 0:0 "$CRON_FILE" 2>/dev/null || return 1
+  chmod 600 "$CRON_FILE" 2>/dev/null || return 1
+}
+
 apply_cron_schedule() {
   check_config
 
@@ -263,6 +268,11 @@ apply_cron_schedule() {
 
   if [ -n "$cron_schedule" ]; then
     printf '%s %s start cron %s\n' "$cron_schedule" "$KEENSNAP_DIR/$SNAPD" "$CRON_MARKER" >>"$CRON_FILE"
+  fi
+
+  if ! fix_cron_file_permissions; then
+    print_message "Не удалось установить владельца root:root для $CRON_FILE. Запустите: sudo keensnap apply" "$RED"
+    return 1
   fi
 
   if restart_cron; then
