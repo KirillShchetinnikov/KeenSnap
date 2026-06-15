@@ -47,12 +47,15 @@ _pkg-ipk:
 	cd out/$(BUILD_DIR)/control; tar czvf ../control.tar.gz .; cd ../../..
 
 	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap
+	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/bin
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap-init > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap.sh > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
+	cp common/keensnap-bin out/$(BUILD_DIR)/data$(ROOT_DIR)/bin/keensnap
 	cp common/config.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/config.conf
-	find out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap -type f -exec sed -i 's/\r$$//' {} +
+	find out/$(BUILD_DIR)/data$(ROOT_DIR) -type f -exec sed -i 's/\r$$//' {} +
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
+	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/bin/keensnap
 	cd out/$(BUILD_DIR)/data; tar czvf ../data.tar.gz .; cd ../../..
 
 	echo 2.0 > out/$(BUILD_DIR)/debian-binary

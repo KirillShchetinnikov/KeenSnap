@@ -20,14 +20,19 @@ print_message() {
 }
 
 mkdir -p "$KEENSNAP_DIR"
+mkdir -p "$(dirname "$BIN_LINK")"
 chmod +x "$SCRIPT" 2>/dev/null
 chmod +x "$INIT_SCRIPT" 2>/dev/null
+chmod +x "$BIN_LINK" 2>/dev/null
 
 if [ -f "$LEGACY_CONFIG_FILE" ]; then
   mv -f "$LEGACY_CONFIG_FILE" "$CONFIG_FILE"
 fi
 
-ln -sf "$SCRIPT" "$BIN_LINK"
+if [ ! -x "$BIN_LINK" ]; then
+  printf '%s\n' '#!/bin/sh' 'exec /opt/root/KeenSnap/keensnap.sh "$@"' >"$BIN_LINK"
+  chmod +x "$BIN_LINK"
+fi
 rm -f "/opt/etc/ndm/schedule.d/99-keensnap.sh"
 
 if [ -f "$CONFIG_FILE" ]; then
