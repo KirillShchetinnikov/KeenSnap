@@ -15,6 +15,7 @@ KEENSNAP_DIR="/opt/root/KeenSnap"
 SNAPD="keensnap-init"
 CRON_FILE="/opt/etc/crontab"
 CRON_MARKER="# KeenSnap"
+CRON_PATH="/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 LOG_FILE="/opt/var/log/keensnap.log"
 SCRIPT_VERSION=""
 
@@ -267,7 +268,7 @@ apply_cron_schedule() {
   sed -i "\|$CRON_MARKER|d" "$CRON_FILE"
 
   if [ -n "$cron_schedule" ]; then
-    printf '%s %s start cron %s\n' "$cron_schedule" "$KEENSNAP_DIR/$SNAPD" "$CRON_MARKER" >>"$CRON_FILE"
+    printf '%s root PATH=%s %s start cron %s\n' "$cron_schedule" "$CRON_PATH" "$KEENSNAP_DIR/$SNAPD" "$CRON_MARKER" >>"$CRON_FILE"
   fi
 
   if ! fix_cron_file_permissions; then

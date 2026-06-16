@@ -12,6 +12,7 @@ CONFIG_FILE="$CONFIG_DIR/config.conf"
 BIN_LINK="/opt/bin/keensnap"
 CRON_FILE="/opt/etc/crontab"
 CRON_MARKER="# KeenSnap"
+CRON_PATH="/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 NC='\033[0m'
@@ -95,7 +96,7 @@ if [ -f "$CONFIG_FILE" ]; then
     set -- $CRON_SCHEDULE
     set +f
     if [ "$#" -eq 5 ]; then
-      printf '%s %s start cron %s\n' "$CRON_SCHEDULE" "$INIT_SCRIPT" "$CRON_MARKER" >>"$CRON_FILE"
+      printf '%s root PATH=%s %s start cron %s\n' "$CRON_SCHEDULE" "$CRON_PATH" "$INIT_SCRIPT" "$CRON_MARKER" >>"$CRON_FILE"
     else
       print_message "CRON_SCHEDULE должен содержать 5 cron-полей" "$RED"
     fi
