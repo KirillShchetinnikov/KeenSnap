@@ -692,6 +692,64 @@ EOF
         fi
       }
 
+      send_success_telegram_notification() {
+        [ "$TELEGRAM_SUCCESS_NOTIFY" = "true" ] || return 0
+
+        if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+          log "Токен бота или ID чата не заданы. Telegram-уведомление об успехе пропущено."
+          return 0
+        fi
+
+        local archive_size="$1"
+        local chat_id="${CHAT_ID%%_*}"
+        local topic_id="${CHAT_ID#*_}"
+        local upload_methods="${UPLOAD_METHOD:-локальное сохранение}"
+        local message
+        local curl_output
+        local response
+        local response_body
+
+        if [ "$chat_id" = "$CHAT_ID" ]; then
+          topic_id=""
+        fi
+
+        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s' \
+          "$EMOJI_OK Бэкап KeenSnap успешно завершён" \
+          "Устройство:" "$(escape_html "$DEVICE")" "$(escape_html "$DEVICE_ID")" \
+          "KeeneticOS:" "$(escape_html "$FW_VERSION_TITLE")" \
+          "Размер:" "$archive_size" \
+          "Дата:" "$datetime" \
+          "Отправка:" "$(escape_html "$upload_methods")")
+
+        if [ -n "$topic_id" ]; then
+          curl_output=$(curl_with_network -s --connect-timeout 10 --max-time 30 -w "\n%{http_code}" -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "message_thread_id=$topic_id" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=$message")
+        else
+          curl_output=$(curl_with_network -s --connect-timeout 10 --max-time 30 -w "\n%{http_code}" -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=$message")
+        fi
+
+        response=$(echo "$curl_output" | tail -n 1)
+        response_body=$(echo "$curl_output" | sed '$d')
+
+        if [ "$response" = "200" ] && echo "$response_body" | grep -q '"ok":true'; then
+          success "Telegram-уведомление об успешном бэкапе отправлено"
+          return 0
+        fi
+
+        if [ -z "$response_body" ]; then
+          error "Ошибка отправки Telegram-уведомления об успехе: пустой ответ сервера (HTTP ${response:-000})"
+        else
+          error "Ошибка отправки Telegram-уведомления об успехе (HTTP $response). Ответ сервера: $response_body"
+        fi
+        return 1
+      }
+
       get_drive_path() {
         local selected_drive="$1"
         local date="$2"
@@ -911,6 +969,7 @@ EOF
             success "Архив сохранён: $archive_path"
             cleanup_old_archives
           fi
+          send_success_telegram_notification "$archive_size"
         else
           if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
             rm -f "$archive_path"

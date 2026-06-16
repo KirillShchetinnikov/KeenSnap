@@ -93,8 +93,9 @@ PARAMETER_BOOL=true
 
 | Параметр | Значение по умолчанию | Что означает | Что указывать |
 | --- | --- | --- | --- |
-| `BOT_TOKEN` | пусто | Токен Telegram-бота для отправки сообщений и файлов. | Токен от [BotFather](https://t.me/BotFather), например `123456:ABC...`. Обязателен для `UPLOAD_METHOD="Telegram"`. |
-| `CHAT_ID` | пусто | ID пользователя, группы, канала или темы форума Telegram. | ID чата. Для темы форума поддерживается формат `chat_id_topic_id`, например `-1001234567890_42`. Обязателен для Telegram-отправки. |
+| `BOT_TOKEN` | пусто | Токен Telegram-бота для отправки сообщений и файлов. | Токен от [BotFather](https://t.me/BotFather), например `123456:ABC...`. Обязателен для `UPLOAD_METHOD="Telegram"` или `TELEGRAM_SUCCESS_NOTIFY=true`. |
+| `CHAT_ID` | пусто | ID пользователя, группы, канала или темы форума Telegram. | ID чата. Для темы форума поддерживается формат `chat_id_topic_id`, например `-1001234567890_42`. Обязателен для Telegram-отправки и уведомления об успехе. |
+| `TELEGRAM_SUCCESS_NOTIFY` | `false` | Отправлять короткое Telegram-сообщение после успешного завершения бэкапа. | `true` или `false`. Работает независимо от `UPLOAD_METHOD` и использует `BOT_TOKEN`/`CHAT_ID`. |
 
 ### Google Drive
 
@@ -179,6 +180,21 @@ S3_KEY="access-key"
 S3_SECRET="secret-key"
 S3_PREFIX="routers/home"
 S3_RETAIN_BACKUPS=10
+```
+
+S3-бэкап с Telegram-уведомлением об успешном завершении:
+
+```shell
+SELECTED_DRIVE="/storage"
+BACKUP_STARTUP_CONFIG=true
+UPLOAD_METHOD="S3"
+S3_ENDPOINT="https://s3.example.com"
+S3_BUCKET_NAME="keensnap-backups"
+S3_KEY="access-key"
+S3_SECRET="secret-key"
+BOT_TOKEN="123456:ABC..."
+CHAT_ID="123456789"
+TELEGRAM_SUCCESS_NOTIFY=true
 ```
 
 ## Команды
