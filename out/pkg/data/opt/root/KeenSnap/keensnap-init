@@ -1,0 +1,1050 @@
+#!/bin/sh
+
+CONFIG_DIR="/opt/etc/keensnap"
+DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
+CONFIG_FILE="$CONFIG_DIR/config.conf"
+
+normalize_path() {
+  local value="$1"
+  while [ "$value" != "/" ] && [ "${value%/}" != "$value" ]; do
+    value="${value%/}"
+  done
+  echo "$value"
+}
+
+load_config() {
+  if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
+    echo "Файл значений по умолчанию не найден: $DEFAULT_CONFIG_FILE"
+    exit 1
+  fi
+
+  . "$DEFAULT_CONFIG_FILE"
+  [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+  SELECTED_DRIVE=$(normalize_path "${SELECTED_DRIVE:-}")
+}
+
+load_config
+SCRIPT_VERSION="1.5.0"
+PROJECT_URL="https://github.com/spatiumstas/keensnap"
+REMOTE_VERSION=$(curl -s "https://api.github.com/repos/spatiumstas/keensnap/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+RELEASE_NOTES="$PROJECT_URL/releases/tag"
+datetime=$(date +%Y-%m-%d_%H-%M)
+date="backup$datetime"
+EMOJI_BACKUP="<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji>"
+EMOJI_VERSION="<tg-emoji emoji-id='5341715473882955310'>⚙️</tg-emoji>"
+EMOJI_SIZE="<tg-emoji emoji-id='5305265301917549162'>💾</tg-emoji>"
+EMOJI_DATE="<tg-emoji emoji-id='5413879192267805083'>📅</tg-emoji>"
+EMOJI_OK="<tg-emoji emoji-id='5206607081334906820'>✅</tg-emoji>"
+EMOJI_FAIL="<tg-emoji emoji-id='5240241223632954241'>❌</tg-emoji>"
+EMOJI_UPDATE="<tg-emoji emoji-id='5386367538735104399'>⌛</tg-emoji>"
+EMOJI_NEW="<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji>"
+EMOJI_PART="<tg-emoji emoji-id='5359741159566484212'>🗳</tg-emoji>"
+items=""
+statuses=""
+(
+  case "$1" in
+  start)
+    if [ -n "$2" ]; then
+      SCHEDULE="$2"
+
+      log() {
+        local message="$(date '+%Y-%m-%d %H:%M:%S') [INFO] $*"
+        echo "$message"
+        logger -p notice -t KeenSnap "$*"
+      }
+
+      error() {
+        local message="$(date '+%Y-%m-%d %H:%M:%S') [ERROR] $*"
+        echo "$message"
+        logger -p err -t KeenSnap "$*"
+      }
+
+      success() {
+        local message="$(date '+%Y-%m-%d %H:%M:%S') [SUCCESS] $*"
+        echo "$message"
+        logger -p notice -t KeenSnap "$*"
+      }
+
+      rci_request() {
+        local endpoint="$1"
+        curl -s "http://localhost:79/rci/$endpoint"
+      }
+
+      rci_parse() {
+        local command="$1"
+        curl -fsS -H "Content-Type: application/json" \
+          -d "[{\"parse\":\"$command\"}]" \
+          "http://localhost:79/rci/"
+      }
+
+      ndmc_cli() {
+        unset LD_LIBRARY_PATH
+        ndmc -c "$@"
+      }
+      
+      get_device_info() {
+        version_output=$(rci_request "show/version" 2>/dev/null)
+        DEVICE=$(echo "$version_output" | grep -o '"device": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
+        FW_VERSION=$(echo "$version_output" | grep -o '"release": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
+        FW_VERSION_TITLE=$(echo "$version_output" | grep -o '"title": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
+        DEVICE_ID=$(echo "$version_output" | grep -o '"hw_id": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
+
+        [ -z "$DEVICE" ] && DEVICE="unknown"
+        [ -z "$FW_VERSION" ] && FW_VERSION="unknown"
+        [ -z "$FW_VERSION_TITLE" ] && FW_VERSION_TITLE="$FW_VERSION"
+        [ -z "$DEVICE_ID" ] && DEVICE_ID="unknown"
+      }
+
+      get_architecture() {
+        arch=$(opkg print-architecture | grep -oE 'mips-3|mipsel-3|aarch64-3' | head -n 1)
+
+        case "$arch" in
+        "mips-3") echo "mips" ;;
+        "mipsel-3") echo "mipsel" ;;
+        "aarch64-3") echo "aarch64" ;;
+        *) echo "unknown_arch" ;;
+        esac
+      }
+
+      package_check() {
+        package="$1"
+        if ! opkg list-installed | grep -q "^$package"; then
+          opkg update && opkg install "$package"
+        fi
+      }
+
+      clean_log() {
+        local log_file="$1"
+        local max_size_kb="${LOG_MAX_SIZE_KB:-512}"
+        local max_size
+        local tmp_log
+
+        if ! echo "$max_size_kb" | grep -Eq '^[0-9]+$'; then
+          log "LOG_MAX_SIZE_KB задан некорректно: $max_size_kb. Ротация лога отключена"
+          return 0
+        fi
+
+        if [ "$max_size_kb" -eq 0 ]; then
+          return 0
+        fi
+
+        max_size=$((max_size_kb * 1024))
+
+        if [ ! -f "$log_file" ]; then
+          touch "$log_file"
+        fi
+
+        local current_size=$(wc -c <"$log_file")
+        if [ "$current_size" -gt "$max_size" ]; then
+          tmp_log="${log_file}.tmp"
+          tail -n 400 "$log_file" >"$tmp_log" && mv "$tmp_log" "$log_file"
+          log "Лог-файл был обрезан до последних 400 строк (лимит: ${max_size_kb} KiB)."
+        fi
+      }
+
+      curl_with_network() {
+        if [ -n "${PROXY_INTERFACE:-}" ] && [ -n "${TG_PROXY:-}" ]; then
+          curl --interface "$PROXY_INTERFACE" --proxy "$TG_PROXY" "$@"
+        elif [ -n "${PROXY_INTERFACE:-}" ]; then
+          curl --interface "$PROXY_INTERFACE" "$@"
+        elif [ -n "${TG_PROXY:-}" ]; then
+          curl --proxy "$TG_PROXY" "$@"
+        else
+          curl "$@"
+        fi
+      }
+
+      json_extract_value() {
+        local payload="$1"
+        local key="$2"
+        echo "$payload" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -n 1
+      }
+
+      escape_html() {
+        printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
+      }
+
+      sanitize_filename() {
+        printf '%s' "$1" | sed 's/[^A-Za-z0-9._-]/-/g'
+      }
+
+      execute_telegram_request() {
+        local request_type="$1"
+        shift
+        local response
+        local response_body
+
+        case "$request_type" in
+          "message")
+            local payload="$1"
+            local curl_output=$(curl_with_network -s -w "\n%{http_code}" -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" -H "Content-Type: application/json" -d "$payload")
+            response=$(echo "$curl_output" | tail -n 1)
+            response_body=$(echo "$curl_output" | sed '$d')
+            ;;
+          "document")
+            local chat_id="$1"
+            local file_path="$2"
+            local caption="$3"
+            local topic_id="$4"
+            local reply_markup="${5:-}"
+            local curl_output=$(curl_with_network -s -w "\n%{http_code}" \
+              -F "chat_id=$chat_id" \
+              -F "document=@$file_path" \
+              --form-string "caption=$caption" \
+              -F "parse_mode=HTML" \
+              ${topic_id:+-F "message_thread_id=$topic_id"} \
+              ${reply_markup:+-F "reply_markup=$reply_markup"} \
+              "https://api.telegram.org/bot$BOT_TOKEN/sendDocument")
+            response=$(echo "$curl_output" | tail -n 1)
+            response_body=$(echo "$curl_output" | sed '$d')
+            ;;
+        esac
+
+        echo "$response|$response_body"
+      }
+
+      send_to_gdrive() {
+        local file_path="$1"
+        local file_name
+        local token_response
+        local access_token
+        local metadata
+        local response
+        local file_id
+        local retry_count=0
+        local max_retries=3
+        local retry_delay=5
+
+        if [ -z "$GD_CLIENT_ID" ] || [ -z "$GD_CLIENT_SECRET" ] || [ -z "$GD_REFRESH_TOKEN" ]; then
+          log "CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN не заданы. Отправка в Google Drive пропущена."
+          return 0
+        fi
+
+        file_name=$(basename "$file_path")
+        metadata="{\"name\":\"$file_name\",\"mimeType\":\"application/gzip\""
+        if [ -n "$GD_FOLDER_ID" ]; then
+          metadata="$metadata,\"parents\":[\"$GD_FOLDER_ID\"]"
+        fi
+        metadata="$metadata}"
+
+        while [ $retry_count -lt $max_retries ]; do
+          token_response=$(curl_with_network -s -X POST "https://oauth2.googleapis.com/token" \
+            -d "client_id=$GD_CLIENT_ID" \
+            -d "client_secret=$GD_CLIENT_SECRET" \
+            -d "refresh_token=$GD_REFRESH_TOKEN" \
+            -d "grant_type=refresh_token")
+          access_token=$(json_extract_value "$token_response" "access_token")
+
+          if [ -z "$access_token" ]; then
+            error "Не удалось получить Google Drive access_token"
+          else
+            response=$(curl_with_network -s -X POST "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart" \
+              -H "Authorization: Bearer $access_token" \
+              -F "metadata=$metadata;type=application/json" \
+              -F "file=@$file_path;type=application/gzip")
+
+            file_id=$(json_extract_value "$response" "id")
+            if [ -n "$file_id" ]; then
+              success "Архив загружен в Google Drive"
+              return 0
+            fi
+
+            error "Ошибка загрузки в Google Drive. Ответ: $response"
+          fi
+
+          retry_count=$((retry_count + 1))
+          if [ $retry_count -lt $max_retries ]; then
+            log "Повторная попытка загрузки в Google Drive... (попытка $retry_count из $max_retries)"
+            sleep $retry_delay
+          fi
+        done
+
+        return 1
+      }
+
+      send_to_webdav() {
+        local file_path="$1"
+        local file_name
+        local target_url
+        local curl_output
+        local curl_rc
+        local response_code
+        local response_body
+        local retry_count=0
+        local max_retries=3
+        local retry_delay=5
+        local insecure_arg=""
+
+        if [ -z "$WD_URL" ]; then
+          log "WD_URL не задан. Отправка в WebDAV пропущена."
+          return 0
+        fi
+
+        [ "$WD_INSECURE" = "true" ] && insecure_arg="-k"
+
+        file_name=$(basename "$file_path")
+        case "$WD_URL" in
+          */) target_url="${WD_URL}${file_name}" ;;
+          *) target_url="$WD_URL" ;;
+        esac
+
+        log "Отправка архива в WebDAV: $target_url"
+
+        while [ $retry_count -lt $max_retries ]; do
+          if [ -n "$WD_USERNAME" ] || [ -n "$WD_PASSWORD" ]; then
+            curl_output=$(curl_with_network -sS -L --anyauth $insecure_arg -w "\n%{http_code}" -u "$WD_USERNAME:$WD_PASSWORD" -T "$file_path" "$target_url" 2>&1)
+          else
+            curl_output=$(curl_with_network -sS -L $insecure_arg -w "\n%{http_code}" -T "$file_path" "$target_url" 2>&1)
+          fi
+          curl_rc=$?
+
+          response_code=$(echo "$curl_output" | tail -n 1)
+          response_body=$(echo "$curl_output" | sed '$d')
+
+          if [ $curl_rc -eq 0 ]; then
+            case "$response_code" in
+              200|201|204)
+                success "Архив загружен в WebDAV"
+                return 0
+                ;;
+              *)
+                error "Ошибка загрузки в WebDAV (HTTP $response_code). Ответ: $response_body"
+                ;;
+            esac
+          else
+            error "Ошибка curl при загрузке в WebDAV (code $curl_rc). Ответ: $response_body"
+          fi
+
+          retry_count=$((retry_count + 1))
+          if [ $retry_count -lt $max_retries ]; then
+            log "Повторная попытка загрузки в WebDAV... (попытка $retry_count из $max_retries)"
+            sleep $retry_delay
+          fi
+        done
+
+        return 1
+      }
+
+      rotate_s3_backups() {
+        local config_file="$1"
+        local retain="${S3_RETAIN_BACKUPS:-0}"
+        local s3_prefix="${S3_PREFIX:-}"
+        local s3_base_uri
+        local list_output
+        local list_rc
+        local archive_list
+        local archive_count
+        local delete_count
+        local old_uri
+        local archive_device_id
+
+        if ! echo "$retain" | grep -Eq '^[0-9]+$'; then
+          log "S3_RETAIN_BACKUPS задан некорректно: $retain. Ротация S3 пропущена"
+          return 0
+        fi
+
+        [ "$retain" -eq 0 ] && return 0
+
+        s3_prefix="${s3_prefix#/}"
+        s3_prefix="${s3_prefix%/}"
+        if [ -n "$s3_prefix" ]; then
+          s3_base_uri="s3://$S3_BUCKET_NAME/$s3_prefix/"
+        else
+          s3_base_uri="s3://$S3_BUCKET_NAME/"
+        fi
+
+        list_output=$(s3cmd -c "$config_file" ls "$s3_base_uri" 2>&1)
+        list_rc=$?
+        if [ "$list_rc" -ne 0 ]; then
+          error "Не удалось получить список S3-архивов для ротации. Ответ: $list_output"
+          return 0
+        fi
+
+        archive_device_id=$(sanitize_filename "$DEVICE_ID")
+        archive_list=$(echo "$list_output" | awk '{print $4}' | grep -E "/${archive_device_id}_backup_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}_fw-.+\\.(tar\\.gz|7z)$" | sort)
+        archive_count=$(echo "$archive_list" | sed '/^$/d' | wc -l)
+
+        if [ "$archive_count" -le "$retain" ]; then
+          return 0
+        fi
+
+        delete_count=$((archive_count - retain))
+        log "S3-ротация: удаление старых архивов: $delete_count"
+
+        echo "$archive_list" | head -n "$delete_count" | while IFS= read -r old_uri; do
+          [ -z "$old_uri" ] && continue
+          if s3cmd -c "$config_file" del "$old_uri" >/dev/null 2>&1; then
+            log "Удалён старый S3-архив: $old_uri"
+          else
+            error "Не удалось удалить старый S3-архив: $old_uri"
+          fi
+        done
+      }
+
+      send_to_s3() {
+        local file_path="$1"
+        local file_name
+        local endpoint_host
+        local use_https="True"
+        local config_file="/tmp/keensnap-s3cmd-$$.conf"
+        local s3_uri
+        local s3_prefix
+        local s3_output
+        local s3_rc
+        local retry_count=0
+        local max_retries=3
+        local retry_delay=5
+
+        if [ -z "$S3_ENDPOINT" ] || [ -z "$S3_BUCKET_NAME" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
+          log "S3_ENDPOINT/S3_BUCKET_NAME/S3_KEY/S3_SECRET не заданы. Отправка в S3 пропущена."
+          return 0
+        fi
+
+        if ! command -v s3cmd >/dev/null 2>&1; then
+          error "s3cmd не установлен. Переустановите пакет keensnap."
+          return 1
+        fi
+
+        file_name=$(basename "$file_path")
+        s3_prefix="${S3_PREFIX:-}"
+        s3_prefix="${s3_prefix#/}"
+        s3_prefix="${s3_prefix%/}"
+        if [ -n "$s3_prefix" ]; then
+          s3_uri="s3://$S3_BUCKET_NAME/$s3_prefix/$file_name"
+        else
+          s3_uri="s3://$S3_BUCKET_NAME/$file_name"
+        fi
+        endpoint_host="$S3_ENDPOINT"
+
+        case "$endpoint_host" in
+          http://*)
+            use_https="False"
+            endpoint_host="${endpoint_host#http://}"
+            ;;
+          https://*)
+            endpoint_host="${endpoint_host#https://}"
+            ;;
+        esac
+        endpoint_host="${endpoint_host%%/*}"
+        endpoint_host="${endpoint_host%/}"
+
+        if [ -z "$endpoint_host" ]; then
+          error "S3_ENDPOINT задан некорректно"
+          return 1
+        fi
+
+        cat >"$config_file" <<EOF
+[default]
+access_key = $S3_KEY
+secret_key = $S3_SECRET
+host_base = $endpoint_host
+host_bucket = $endpoint_host
+use_https = $use_https
+EOF
+        chmod 600 "$config_file"
+
+        log "Отправка архива в S3: $s3_uri"
+
+        while [ $retry_count -lt $max_retries ]; do
+          s3_output=$(s3cmd -c "$config_file" put "$file_path" "$s3_uri" 2>&1)
+          s3_rc=$?
+
+          if [ $s3_rc -eq 0 ]; then
+            success "Архив загружен в S3"
+            rotate_s3_backups "$config_file"
+            rm -f "$config_file"
+            return 0
+          fi
+
+          error "Ошибка загрузки в S3 (code $s3_rc). Ответ: $s3_output"
+          retry_count=$((retry_count + 1))
+          if [ $retry_count -lt $max_retries ]; then
+            log "Повторная попытка загрузки в S3... (попытка $retry_count из $max_retries)"
+            sleep $retry_delay
+          fi
+        done
+
+        rm -f "$config_file"
+        return 1
+      }
+
+      send_archive_by_method() {
+        local report="$1"
+        local archive_path="$2"
+        local keyboard="${3:-}"
+        local methods="$UPLOAD_METHOD"
+        local sent_count=0
+
+        if [ -z "$methods" ]; then
+          log "UPLOAD_METHOD не задан, отправка пропущена"
+          return 0
+        fi
+
+        methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
+
+        for method in $methods; do
+          case "$method" in
+            Telegram)
+              if send_to_telegram "$report" "$archive_path" "$keyboard"; then
+                sent_count=$((sent_count + 1))
+              else
+                error "Ошибка отправки в Telegram"
+              fi
+              ;;
+            GDrive)
+              if send_to_gdrive "$archive_path"; then
+                sent_count=$((sent_count + 1))
+              else
+                error "Ошибка отправки в Google Drive"
+              fi
+              ;;
+            WebDAV)
+              if send_to_webdav "$archive_path"; then
+                sent_count=$((sent_count + 1))
+              else
+                error "Ошибка отправки в WebDAV"
+              fi
+              ;;
+            S3)
+              if send_to_s3 "$archive_path"; then
+                sent_count=$((sent_count + 1))
+              else
+                error "Ошибка отправки в S3"
+              fi
+              ;;
+            *)
+              error "Неизвестный метод отправки: $method"
+              ;;
+          esac
+        done
+
+        if [ "$sent_count" -eq 0 ]; then
+          return 1
+        fi
+        return 0
+      }
+
+      has_upload_method() {
+        local target="$1"
+        local methods="$UPLOAD_METHOD"
+
+        [ -z "$methods" ] && return 1
+
+        methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
+        echo "$methods" | grep -qx "$target"
+      }
+
+      cleanup_old_archives() {
+        local old_count=0
+        local old_list
+        local archive_device_id
+
+        if [ -z "$RETAIN_ARCHIVES_DAYS" ]; then
+          return 0
+        fi
+
+        if ! echo "$RETAIN_ARCHIVES_DAYS" | grep -Eq '^[0-9]+$'; then
+          log "RETAIN_ARCHIVES_DAYS задан некорректно: $RETAIN_ARCHIVES_DAYS. Очистка пропущена"
+          return 0
+        fi
+
+        if [ "$RETAIN_ARCHIVES_DAYS" -eq 0 ]; then
+          log "Очистка старых архивов отключена"
+          return 0
+        fi
+
+        archive_device_id=$(sanitize_filename "$DEVICE_ID")
+        old_list=$(find "$SELECTED_DRIVE" -maxdepth 1 -type f \( -name "${archive_device_id}_backup_*.tar.gz" -o -name "${archive_device_id}_backup_*.7z" \) -mtime +"$RETAIN_ARCHIVES_DAYS" 2>/dev/null)
+        if [ -z "$old_list" ]; then
+          return 0
+        fi
+
+        log "Удаление старого архива:"
+        echo "$old_list"
+
+        for old_file in $old_list; do
+          if rm -f "$old_file"; then
+            old_count=$((old_count + 1))
+          else
+            error "Не удалось удалить архив: $old_file"
+          fi
+        done
+
+        if [ "$old_count" -gt 0 ]; then
+          log "Удалено старых архивов: $old_count (хранение: $RETAIN_ARCHIVES_DAYS дней)"
+        fi
+      }
+
+      send_with_retry() {
+        local request_type="$1"
+        local success_message="$2"
+        local error_prefix="$3"
+        shift 3
+        local retry_count=0
+        local max_retries=3
+        local retry_delay=5
+        local response
+        local response_body
+        local result
+
+        while [ $retry_count -lt $max_retries ]; do
+          result=$(execute_telegram_request "$request_type" "$@")
+          response="${result%%|*}"
+          response_body="${result##*|}"
+
+          if [ "$response" = "200" ] && echo "$response_body" | grep -q '"ok":true'; then
+            if [ -n "$success_message" ]; then
+              success "$success_message"
+            fi
+            return 0
+          else
+            if [ -z "$response_body" ]; then
+              error "${error_prefix}: пустой ответ сервера (HTTP ${response:-000})"
+            else
+              error "${error_prefix} (HTTP $response). Ответ сервера: $response_body"
+            fi
+            retry_count=$((retry_count + 1))
+            if [ $retry_count -lt $max_retries ]; then
+              log "Повторная попытка отправки... (попытка $retry_count из $max_retries)"
+              sleep $retry_delay
+            fi
+          fi
+        done
+        error "Все попытки отправки исчерпаны ($max_retries из $max_retries)"
+        return 1
+      }
+
+      send_to_telegram() {
+        if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+          log "Токен бота или ID чата не заданы. Отправка в Telegram пропущена."
+          return 0
+        fi
+
+        local chat_id="${CHAT_ID%%_*}"
+        local topic_id="${CHAT_ID#*_}"
+        if [ "$chat_id" = "$CHAT_ID" ]; then
+          topic_id=""
+        fi
+
+        local caption="$1"
+        local file_path="$2"
+        local reply_markup="${3:-}"
+        local escaped_caption="$caption"
+
+        if [ -z "$file_path" ] || [ ! -f "$file_path" ]; then
+          local payload
+          if [ -n "$topic_id" ]; then
+            payload=$(printf '{"chat_id":%s,"message_thread_id":%s,"parse_mode":"HTML","text":"%s"}' \
+              "$chat_id" "$topic_id" "$escaped_caption")
+          else
+            payload=$(printf '{"chat_id":%s,"parse_mode":"HTML","text":"%s"}' \
+              "$chat_id" "$escaped_caption")
+          fi
+
+          send_with_retry "message" "Сообщение успешно отправлено в Telegram" "Ошибка отправки в Telegram" "$payload"
+          return $?
+        else
+          local max_size=$((49 * 1024 * 1024))
+          local archive_size=$(wc -c <"$file_path")
+
+          if [ "$archive_size" -le "$max_size" ]; then
+            log "Отправка архива: $file_path"
+            
+            if send_with_retry "document" "Сообщение успешно отправлено в Telegram" "Ошибка отправки в Telegram" "$chat_id" "$file_path" "$escaped_caption" "$topic_id" "$reply_markup"; then
+              return 0
+            else
+              return 1
+            fi
+          else
+            package_check "coreutils-split"
+            log "Архив превышает 49МБ, разбиваем на части..."
+            split -b "$max_size" -d --numeric-suffixes=001 --suffix-length=3 "$file_path" "${file_path}."
+
+            local part_files=""
+            local part_number=1
+            for part_file in "${file_path}."*; do
+              if [[ "$part_file" =~ \.[0-9]{3}$ ]]; then
+                part_files="$part_files $part_file"
+              fi
+            done
+            local total_parts=$(echo "$part_files" | wc -w)
+
+            cleanup_parts() {
+              for part in $part_files; do
+                [ -f "$part" ] && rm -f "$part"
+              done
+            }
+
+            for part_file in $part_files; do
+              local part_caption="$EMOJI_PART Часть $part_number из $total_parts"$'\n\n'"$escaped_caption"
+              log "Отправка части: $part_file"
+              if send_with_retry "document" "" "Ошибка отправки части $part_file" "$chat_id" "$part_file" "$part_caption" "$topic_id" "$reply_markup"; then
+                rm -f "$part_file"
+              else
+                cleanup_parts
+                return 1
+              fi
+              part_number=$((part_number + 1))
+            done
+            return 0
+          fi
+        fi
+      }
+
+      send_success_telegram_notification() {
+        [ "$TELEGRAM_SUCCESS_NOTIFY" = "true" ] || return 0
+
+        if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
+          log "Токен бота или ID чата не заданы. Telegram-уведомление об успехе пропущено."
+          return 0
+        fi
+
+        local archive_size="$1"
+        local chat_id="${CHAT_ID%%_*}"
+        local topic_id="${CHAT_ID#*_}"
+        local upload_methods="${UPLOAD_METHOD:-локальное сохранение}"
+        local message
+        local curl_output
+        local response
+        local response_body
+
+        if [ "$chat_id" = "$CHAT_ID" ]; then
+          topic_id=""
+        fi
+
+        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s' \
+          "$EMOJI_OK Бэкап KeenSnap успешно завершён" \
+          "Устройство:" "$(escape_html "$DEVICE")" "$(escape_html "$DEVICE_ID")" \
+          "KeeneticOS:" "$(escape_html "$FW_VERSION_TITLE")" \
+          "Размер:" "$archive_size" \
+          "Дата:" "$datetime" \
+          "Отправка:" "$(escape_html "$upload_methods")")
+
+        if [ -n "$topic_id" ]; then
+          curl_output=$(curl_with_network -s --connect-timeout 10 --max-time 30 -w "\n%{http_code}" -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "message_thread_id=$topic_id" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=$message")
+        else
+          curl_output=$(curl_with_network -s --connect-timeout 10 --max-time 30 -w "\n%{http_code}" -X POST "https://api.telegram.org/bot$BOT_TOKEN/sendMessage" \
+            -d "chat_id=$chat_id" \
+            -d "parse_mode=HTML" \
+            --data-urlencode "text=$message")
+        fi
+
+        response=$(echo "$curl_output" | tail -n 1)
+        response_body=$(echo "$curl_output" | sed '$d')
+
+        if [ "$response" = "200" ] && echo "$response_body" | grep -q '"ok":true'; then
+          success "Telegram-уведомление об успешном бэкапе отправлено"
+          return 0
+        fi
+
+        if [ -z "$response_body" ]; then
+          error "Ошибка отправки Telegram-уведомления об успехе: пустой ответ сервера (HTTP ${response:-000})"
+        else
+          error "Ошибка отправки Telegram-уведомления об успехе (HTTP $response). Ответ сервера: $response_body"
+        fi
+        return 1
+      }
+
+      get_drive_path() {
+        local selected_drive="$1"
+        local date="$2"
+        local device_uuid=""
+        local subfolder=""
+        local rel_path=""
+        local ndmc_path=""
+
+        if [ "$selected_drive" = "/storage" ]; then
+          rel_path="$date"
+          ndmc_path="storage:$rel_path"
+        else
+          device_uuid=$(echo "$selected_drive" | awk -F'/' '{print $4}')
+          if [ "${selected_drive#*/tmp/mnt/$device_uuid/}" != "$selected_drive" ]; then
+            subfolder="${selected_drive#*/tmp/mnt/$device_uuid/}"
+            subfolder="${subfolder%/}"
+          fi
+          if [ -n "$subfolder" ]; then
+            rel_path="$subfolder/$date"
+          else
+            rel_path="$date"
+          fi
+          ndmc_path="$device_uuid:$rel_path"
+        fi
+        echo "$ndmc_path|$rel_path"
+      }
+
+      backup_startup_config() {
+        local success=1
+        local item_name="startup-config"
+
+        if [ -n "$SELECTED_DRIVE" ]; then
+          log "Бэкап $item_name..."
+          local paths_out=$(get_drive_path "$SELECTED_DRIVE" "$date")
+          local ndmc_path="${paths_out%%|*}"
+          local rel_path="${paths_out##*|}"
+          local backup_file="$ndmc_path/${DEVICE_ID}_${FW_VERSION}_$item_name.txt"
+          rci_parse "copy $item_name $backup_file" >/dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            success "$item_name сохранён"
+            success=0
+          else
+            error "Ошибка при сохранении $item_name"
+          fi
+        fi
+        items="$items $item_name"
+        statuses="$statuses $success"
+      }
+
+      backup_entware() {
+        local success=1
+        local item_name="Entware"
+        package_check "tar"
+        if [ -n "$SELECTED_DRIVE" ]; then
+          log "Бэкап $item_name..."
+          local backup_file="$SELECTED_DRIVE/$date/$(get_architecture)_$item_name.tar.gz"
+          local exclude_args=""
+          local exclude_list="$ENTWARE_EXCLUDE $date"
+          local pattern
+
+          for pattern in $exclude_list; do
+            pattern=$(echo "$pattern" | sed 's:^/*::')
+            [ -n "$pattern" ] && exclude_args="$exclude_args --exclude=./$pattern"
+          done
+
+          tar_output=$(tar cvzf "$backup_file" -C /opt $exclude_args . 2>&1)
+          log_operation=$(echo "$tar_output" | tail -n 2)
+
+          if echo "$log_operation" | grep -iq "error\|no space left on device"; then
+            log "Ошибка при сохранении $item_name:" "$RED"
+            echo "$log_operation"
+          else
+            success "$item_name сохранён"
+            success=0
+          fi
+        fi
+
+        items="$items $item_name"
+        statuses="$statuses $success"
+      }
+
+      backup_wg_private_key() {
+        local success=1
+        local item_name="WireGuard-Private-Key"
+        if [ -n "$SELECTED_DRIVE" ]; then
+          log "Бэкап $item_name..."
+          local folder_path="$SELECTED_DRIVE/$date"
+          local backup_file="$folder_path/$item_name.txt"
+          wg show all private-key >"$backup_file"
+          if [ $? -eq 0 ]; then
+            success "$item_name сохранён"
+            success=0
+          else
+            error "Ошибка при сохранении $item_name"
+          fi
+          items="$items $item_name"
+          statuses="$statuses $success"
+        fi
+      }
+
+      backup_firmware() {
+        local success=1
+        local item_name="firmware"
+        if [ -n "$SELECTED_DRIVE" ]; then
+          log "Бэкап $item_name..."
+          local paths_out=$(get_drive_path "$SELECTED_DRIVE" "$date")
+          local ndmc_path="${paths_out%%|*}"
+          local rel_path="${paths_out##*|}"
+          local backup_file="$ndmc_path/${DEVICE_ID}_${FW_VERSION}_$item_name.bin"
+          rci_parse "copy flash:/$item_name $backup_file" >/dev/null 2>&1
+          if [ $? -eq 0 ]; then
+            success "$item_name сохранена"
+            success=0
+          else
+            error "Ошибка при сохранении $item_name"
+          fi
+        fi
+        items="$items $item_name"
+        statuses="$statuses $success"
+      }
+
+      create_backup_and_send_report() {
+        local items=""
+        local statuses=""
+        mkdir -p "$SELECTED_DRIVE/$date"
+        local backup_performed=0
+
+        if [ "$BACKUP_ENTWARE" = "true" ]; then
+          backup_entware
+          backup_performed=1
+        fi
+
+        if [ "$BACKUP_STARTUP_CONFIG" = "true" ]; then
+          backup_startup_config
+          backup_performed=1
+        fi
+
+        if [ "$BACKUP_FIRMWARE" = "true" ]; then
+          backup_firmware
+          backup_performed=1
+        fi
+
+        if [ "$BACKUP_WG_PRIVATE_KEY" = "true" ]; then
+          backup_wg_private_key
+          backup_performed=1
+        fi
+
+        if [ "$backup_performed" -eq 0 ]; then
+          log "Ни один из вариантов бэкапа не выбран"
+          return 1
+        fi
+
+        local archive_path
+        local archive_device_id
+        local archive_fw_version
+        if [ -n "$SELECTED_DRIVE" ] && [ -d "$SELECTED_DRIVE/$date" ]; then
+          cp "$LOG_FILE" "$SELECTED_DRIVE/$date/backup_log.txt"
+          cat >"$SELECTED_DRIVE/$date/backup_meta.info" <<EOF
+SCRIPT_VERSION="$SCRIPT_VERSION"
+DEVICE="$DEVICE"
+DEVICE_ID="$DEVICE_ID"
+FW_VERSION="$FW_VERSION"
+FW_VERSION_TITLE="$FW_VERSION_TITLE"
+DATE="$datetime"
+UPLOAD_METHOD="$UPLOAD_METHOD"
+EOF
+          if [ -n "$ARCHIVE_PASSWORD" ]; then
+            package_check "7-zip"
+            archive_device_id=$(sanitize_filename "$DEVICE_ID")
+            archive_fw_version=$(sanitize_filename "$FW_VERSION")
+            archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.7z"
+            log "Создание архива с паролем..."
+            7zz a -t7z -mx=9 -p"$ARCHIVE_PASSWORD" "$archive_path" "$SELECTED_DRIVE/$date"
+          else
+            archive_device_id=$(sanitize_filename "$DEVICE_ID")
+            archive_fw_version=$(sanitize_filename "$FW_VERSION")
+            archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.tar.gz"
+            log "Создание архива..."
+            tar -czf "$archive_path" -C "$SELECTED_DRIVE" "$date"
+          fi
+          if [ $? -ne 0 ]; then
+            error "Ошибка при создании архива"
+            send_to_telegram "Ошибка при создании архива" "$SELECTED_DRIVE/$date/backup_log.txt"
+            rm -rf "$archive_path"
+            return 1
+          fi
+          success "Архив создан"
+        else
+          error "Невозможно создать архив: папка с бэкапами не найдена."
+          return 1
+        fi
+
+        local archive_size=$(wc -c <"$archive_path" | awk '{if ($1 >= 1048576) printf "%.1fМБ", $1/1048576; else if ($1 >= 1024) printf "%.1fКБ", $1/1024; else printf "%dБ", $1}')
+        local _dev _fw
+        _dev=$(escape_html "$DEVICE ($DEVICE_ID)")
+        _fw=$(escape_html "$FW_VERSION_TITLE")
+        local report="$EMOJI_BACKUP Бэкап: $_dev"$'\n'"$EMOJI_VERSION Версия: $_fw"$'\n'"$EMOJI_SIZE Размер: $archive_size"$'\n'"$EMOJI_DATE Дата: $datetime"$'\n\n'
+        local i=1
+        for item in $items; do
+          local status_value=$(echo $statuses | cut -d' ' -f$i)
+          if [ "$status_value" -eq 0 ]; then
+            report="$report$EMOJI_OK $item"$'\n'
+          else
+            report="$report$EMOJI_FAIL $item"$'\n'
+          fi
+          i=$((i + 1))
+        done
+        [ -n "$HASHTAG" ] && report="$report"$'\n'"$(escape_html "$HASHTAG")"
+
+        local keyboard
+        keyboard=$(get_release_keyboard)
+        if send_archive_by_method "$report" "$archive_path" "$keyboard"; then
+          if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
+            rm -f "$archive_path"
+            log "Архив удалён после отправки"
+          else
+            success "Архив сохранён: $archive_path"
+            cleanup_old_archives
+          fi
+          send_success_telegram_notification "$archive_size"
+        else
+          if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
+            rm -f "$archive_path"
+            error "Отправка не удалась, архив удалён: $archive_path"
+          else
+            error "Отправка не удалась, архив сохранён: $archive_path"
+          fi
+        fi
+      }
+
+      delete_temp_folder() {
+        rm -rf "$SELECTED_DRIVE/$date"
+      }
+
+      main() {
+        clean_log "$LOG_FILE"
+        get_device_info
+        log "Запуск скрипта: $SCHEDULE"
+        local drive_uuid=$(basename "$SELECTED_DRIVE")
+        local device_uuid=$(echo "$SELECTED_DRIVE" | awk -F'/' '{print $4}')
+        if [ -z "$SELECTED_DRIVE" ] || ([ "$SELECTED_DRIVE" != "/storage" ] && rci_request "ls" 2>/dev/null | grep -q "\"$device_uuid\":") && [ ! -d "$SELECTED_DRIVE" ]; then
+          drive_name=$(basename "$SELECTED_DRIVE")
+          error "Выбранный накопитель $drive_name не подключён"
+          if has_upload_method "Telegram"; then
+            send_to_telegram "$EMOJI_FAIL Выбранный накопитель $drive_name не подключён" ""
+          fi
+          return 1
+        fi
+
+        create_backup_and_send_report
+        delete_temp_folder
+        log "Скрипт завершил работу"
+      }
+
+      version_to_number() {
+        local ver="$1"
+        local a b c d
+        set -- $(printf '%s' "$ver" | sed 's/[^0-9]/ /g')
+        a=${1:-0}; b=${2:-0}; c=${3:-0}; d=${4:-0}
+        printf '%d' "$(( (a * 16777216) + (b * 65536) + (c * 256) + d ))"
+      }
+
+      is_update_available() {
+        if [ -z "$SCRIPT_VERSION" ] || [ -z "$REMOTE_VERSION" ]; then
+          return 1
+        fi
+        local local_num remote_num
+        local_num=$(version_to_number "$SCRIPT_VERSION")
+        remote_num=$(version_to_number "$REMOTE_VERSION")
+        [ "$remote_num" -gt "$local_num" ]
+      }
+
+      get_release_keyboard() {
+        if ! is_update_available; then
+          return
+        fi
+        printf '{"inline_keyboard":[[{"text":"Поставить звезду","icon_custom_emoji_id":"5258185631355378853","url":"%s"}],[{"text":"Новая версия %s","icon_custom_emoji_id":"5424818078833715060","style":"primary","url":"%s/%s"}]]}' "$PROJECT_URL" "$REMOTE_VERSION" "$RELEASE_NOTES" "$REMOTE_VERSION"
+      }
+
+      check_update() {
+        if [ "$AUTO_UPDATE" != "true" ]; then
+          return 0
+        fi
+        if is_update_available; then
+          log "Доступна новая версия: $REMOTE_VERSION. Обновляемся..."
+          exec keensnap "script_update" "silent"
+        fi
+      }
+
+      main "$SCHEDULE"
+      check_update
+    fi
+    ;;
+  *)
+    exit 1
+    ;;
+  esac
+) 2>&1 | tee -a "$LOG_FILE"
