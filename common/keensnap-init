@@ -31,15 +31,6 @@ REMOTE_VERSION=$(curl -s "https://api.github.com/repos/spatiumstas/keensnap/rele
 RELEASE_NOTES="$PROJECT_URL/releases/tag"
 datetime=$(date +%Y-%m-%d_%H-%M)
 date="backup$datetime"
-EMOJI_BACKUP="<tg-emoji emoji-id='5447410659077661506'>🌐</tg-emoji>"
-EMOJI_VERSION="<tg-emoji emoji-id='5341715473882955310'>⚙️</tg-emoji>"
-EMOJI_SIZE="<tg-emoji emoji-id='5305265301917549162'>💾</tg-emoji>"
-EMOJI_DATE="<tg-emoji emoji-id='5413879192267805083'>📅</tg-emoji>"
-EMOJI_OK="<tg-emoji emoji-id='5206607081334906820'>✅</tg-emoji>"
-EMOJI_FAIL="<tg-emoji emoji-id='5240241223632954241'>❌</tg-emoji>"
-EMOJI_UPDATE="<tg-emoji emoji-id='5386367538735104399'>⌛</tg-emoji>"
-EMOJI_NEW="<tg-emoji emoji-id='5375338737028841420'>🔄</tg-emoji>"
-EMOJI_PART="<tg-emoji emoji-id='5359741159566484212'>🗳</tg-emoji>"
 items=""
 statuses=""
 (
@@ -677,7 +668,7 @@ EOF
             }
 
             for part_file in $part_files; do
-              local part_caption="$EMOJI_PART Часть $part_number из $total_parts"$'\n\n'"$escaped_caption"
+              local part_caption="Часть $part_number из $total_parts"$'\n\n'"$escaped_caption"
               log "Отправка части: $part_file"
               if send_with_retry "document" "" "Ошибка отправки части $part_file" "$chat_id" "$part_file" "$part_caption" "$topic_id" "$reply_markup"; then
                 rm -f "$part_file"
@@ -714,7 +705,7 @@ EOF
         fi
 
         message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s' \
-          "$EMOJI_OK Бэкап KeenSnap успешно завершён" \
+          "Бэкап KeenSnap успешно завершён" \
           "Устройство:" "$(escape_html "$DEVICE")" "$(escape_html "$DEVICE_ID")" \
           "KeeneticOS:" "$(escape_html "$FW_VERSION_TITLE")" \
           "Размер:" "$archive_size" \
@@ -946,14 +937,14 @@ EOF
         local _dev _fw
         _dev=$(escape_html "$DEVICE ($DEVICE_ID)")
         _fw=$(escape_html "$FW_VERSION_TITLE")
-        local report="$EMOJI_BACKUP Бэкап: $_dev"$'\n'"$EMOJI_VERSION Версия: $_fw"$'\n'"$EMOJI_SIZE Размер: $archive_size"$'\n'"$EMOJI_DATE Дата: $datetime"$'\n\n'
+        local report="Бэкап: $_dev"$'\n'"Версия: $_fw"$'\n'"Размер: $archive_size"$'\n'"Дата: $datetime"$'\n\n'
         local i=1
         for item in $items; do
           local status_value=$(echo $statuses | cut -d' ' -f$i)
           if [ "$status_value" -eq 0 ]; then
-            report="$report$EMOJI_OK $item"$'\n'
+            report="$report$item"$'\n'
           else
-            report="$report$EMOJI_FAIL $item"$'\n'
+            report="$report$item"$'\n'
           fi
           i=$((i + 1))
         done
@@ -994,7 +985,7 @@ EOF
           drive_name=$(basename "$SELECTED_DRIVE")
           error "Выбранный накопитель $drive_name не подключён"
           if has_upload_method "Telegram"; then
-            send_to_telegram "$EMOJI_FAIL Выбранный накопитель $drive_name не подключён" ""
+            send_to_telegram "Выбранный накопитель $drive_name не подключён" ""
           fi
           return 1
         fi
