@@ -129,7 +129,7 @@ format_upload_methods() {
   methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
   for method in $methods; do
     if [ "$method" = "S3" ] && [ -n "$bucket_name" ]; then
-      method="S3 ($bucket_name)"
+      method="S3 (s3://$bucket_name)"
     fi
     formatted="${formatted}${formatted:+, }$method"
   done

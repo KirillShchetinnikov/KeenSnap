@@ -540,7 +540,7 @@ EOF
         methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
         for method in $methods; do
           if [ "$method" = "S3" ] && [ -n "$bucket_name" ]; then
-            method="S3 ($bucket_name)"
+            method="S3 (s3://$bucket_name)"
           fi
           formatted="${formatted}${formatted:+, }$method"
         done
@@ -713,6 +713,7 @@ EOF
         fi
 
         local archive_size="$1"
+        local backup_content="$2"
         local chat_id="${CHAT_ID%%_*}"
         local topic_id="${CHAT_ID#*_}"
         local upload_methods
@@ -727,8 +728,9 @@ EOF
 
         upload_methods=$(format_upload_methods "$UPLOAD_METHOD" "$S3_BUCKET_NAME")
         [ -z "$upload_methods" ] && upload_methods="локальное сохранение"
+        [ -z "$backup_content" ] && backup_content="не задано"
 
-        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s' \
+        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s' \
           "Бэкап KeenSnap успешно завершён" \
           "Устройство:" "$(escape_html "$DEVICE")" "$(escape_html "$DEVICE_ID")" \
           "Имя системы:" "$(escape_html "$SYSTEM_NAME")" \
@@ -736,6 +738,7 @@ EOF
           "KeeneticOS:" "$(escape_html "$FW_VERSION_TITLE")" \
           "Размер:" "$archive_size" \
           "Дата:" "$datetime" \
+          "Состав бэкапа:" "$(escape_html "$backup_content")" \
           "Отправка:" "$(escape_html "$upload_methods")")
 
         if [ -n "$topic_id" ]; then
@@ -979,7 +982,9 @@ EOF
         [ -n "$HASHTAG" ] && report="$report"$'\n'"$(escape_html "$HASHTAG")"
 
         local keyboard
+        local backup_content
         keyboard=$(get_release_keyboard)
+        backup_content=$(echo "$items" | sed 's/^ *//;s/  */, /g')
         if send_archive_by_method "$report" "$archive_path" "$keyboard"; then
           if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
             rm -f "$archive_path"
@@ -988,7 +993,7 @@ EOF
             success "Архив сохранён: $archive_path"
             cleanup_old_archives
           fi
-          send_success_telegram_notification "$archive_size"
+          send_success_telegram_notification "$archive_size" "$backup_content"
         else
           if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
             rm -f "$archive_path"
