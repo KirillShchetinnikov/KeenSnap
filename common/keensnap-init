@@ -942,7 +942,7 @@ EOF
         _dev=$(escape_html "$DEVICE ($DEVICE_ID)")
         _fw=$(escape_html "$FW_VERSION_TITLE")
         _system_description=$(escape_html "$SYSTEM_DESCRIPTION")
-        local report="Бэкап: $_dev"$'\n'"Описание системы: $_system_description"$'\n'"Версия: $_fw"$'\n'"Размер: $archive_size"$'\n'"Дата: $datetime"$'\n\n'
+        local report="Бэкап: $_dev"$'\n'"Описание системы: $_system_description"$'\n'"Версия: $_fw"$'\n'"Размер: $archive_size"$'\n'"Дата: $datetime"$'\n\n'"Состав бэкапа:"$'\n'
         local i=1
         for item in $items; do
           local status_value=$(echo $statuses | cut -d' ' -f$i)
