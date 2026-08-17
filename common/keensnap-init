@@ -76,15 +76,18 @@ statuses=""
       
       get_device_info() {
         version_output=$(rci_request "show/version" 2>/dev/null)
+        system_config_output=$(rci_request "system" 2>/dev/null)
         DEVICE=$(echo "$version_output" | grep -o '"device": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
         FW_VERSION=$(echo "$version_output" | grep -o '"release": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
         FW_VERSION_TITLE=$(echo "$version_output" | grep -o '"title": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
         DEVICE_ID=$(echo "$version_output" | grep -o '"hw_id": "[^"]*"' | cut -d'"' -f4 2>/dev/null)
+        SYSTEM_DESCRIPTION=$(echo "$system_config_output" | grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | cut -d'"' -f4 2>/dev/null)
 
         [ -z "$DEVICE" ] && DEVICE="unknown"
         [ -z "$FW_VERSION" ] && FW_VERSION="unknown"
         [ -z "$FW_VERSION_TITLE" ] && FW_VERSION_TITLE="$FW_VERSION"
         [ -z "$DEVICE_ID" ] && DEVICE_ID="unknown"
+        [ -z "$SYSTEM_DESCRIPTION" ] && SYSTEM_DESCRIPTION="не задано"
       }
 
       get_architecture() {
@@ -704,9 +707,10 @@ EOF
           topic_id=""
         fi
 
-        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s' \
+        message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s' \
           "Бэкап KeenSnap успешно завершён" \
           "Устройство:" "$(escape_html "$DEVICE")" "$(escape_html "$DEVICE_ID")" \
+          "Описание системы:" "$(escape_html "$SYSTEM_DESCRIPTION")" \
           "KeeneticOS:" "$(escape_html "$FW_VERSION_TITLE")" \
           "Размер:" "$archive_size" \
           "Дата:" "$datetime" \
@@ -934,10 +938,11 @@ EOF
         fi
 
         local archive_size=$(wc -c <"$archive_path" | awk '{if ($1 >= 1048576) printf "%.1fМБ", $1/1048576; else if ($1 >= 1024) printf "%.1fКБ", $1/1024; else printf "%dБ", $1}')
-        local _dev _fw
+        local _dev _fw _system_description
         _dev=$(escape_html "$DEVICE ($DEVICE_ID)")
         _fw=$(escape_html "$FW_VERSION_TITLE")
-        local report="Бэкап: $_dev"$'\n'"Версия: $_fw"$'\n'"Размер: $archive_size"$'\n'"Дата: $datetime"$'\n\n'
+        _system_description=$(escape_html "$SYSTEM_DESCRIPTION")
+        local report="Бэкап: $_dev"$'\n'"Описание системы: $_system_description"$'\n'"Версия: $_fw"$'\n'"Размер: $archive_size"$'\n'"Дата: $datetime"$'\n\n'
         local i=1
         for item in $items; do
           local status_value=$(echo $statuses | cut -d' ' -f$i)
