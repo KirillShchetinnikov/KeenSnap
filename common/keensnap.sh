@@ -84,6 +84,10 @@ get_system_description() {
   rci_request "system" | grep -o '"description"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | cut -d'"' -f4 2>/dev/null
 }
 
+get_system_name() {
+  rci_request "system" | grep -o '"hostname"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | cut -d'"' -f4 2>/dev/null
+}
+
 get_config_raw() {
   local key="$1"
   {
@@ -167,6 +171,7 @@ show_status() {
   local device
   local hw_id
   local fw_version
+  local system_name
   local system_description
   local cron_schedule
   local selected_drive
@@ -176,6 +181,7 @@ show_status() {
   device=$(get_device)
   hw_id=$(get_hw_id)
   fw_version=$(get_fw_version)
+  system_name=$(get_system_name)
   system_description=$(get_system_description)
   cron_schedule=$(get_config_value "CRON_SCHEDULE")
   selected_drive=$(normalize_path "$(get_config_value "SELECTED_DRIVE")")
@@ -185,6 +191,7 @@ show_status() {
   [ -z "$device" ] && device="unknown"
   [ -z "$hw_id" ] && hw_id="unknown"
   [ -z "$fw_version" ] && fw_version="unknown"
+  [ -z "$system_name" ] && system_name="не задано"
   [ -z "$system_description" ] && system_description="не задано"
   [ -z "$cron_schedule" ] && cron_schedule="disabled"
   [ -z "$selected_drive" ] && selected_drive="not set"
@@ -193,6 +200,7 @@ show_status() {
 
   printf "${CYAN}Модель:${NC} %s (%s)\n" "$device" "$hw_id"
   printf "${CYAN}KeeneticOS:${NC} %s\n" "$fw_version"
+  printf "${CYAN}Имя системы:${NC} %s\n" "$system_name"
   printf "${CYAN}Описание системы:${NC} %s\n" "$system_description"
   printf "${CYAN}Версия KeenSnap:${NC} %s by %s\n" "$SCRIPT_VERSION" "$USERNAME"
   printf "${CYAN}Cron:${NC} %s\n" "$cron_schedule"
