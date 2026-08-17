@@ -531,6 +531,22 @@ EOF
         echo "$methods" | grep -qx "$target"
       }
 
+      format_upload_methods() {
+        local methods="$1"
+        local bucket_name="$2"
+        local method
+        local formatted=""
+
+        methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
+        for method in $methods; do
+          if [ "$method" = "S3" ] && [ -n "$bucket_name" ]; then
+            method="S3 ($bucket_name)"
+          fi
+          formatted="${formatted}${formatted:+, }$method"
+        done
+        echo "$formatted"
+      }
+
       cleanup_old_archives() {
         local old_count=0
         local old_list
@@ -699,7 +715,7 @@ EOF
         local archive_size="$1"
         local chat_id="${CHAT_ID%%_*}"
         local topic_id="${CHAT_ID#*_}"
-        local upload_methods="${UPLOAD_METHOD:-локальное сохранение}"
+        local upload_methods
         local message
         local curl_output
         local response
@@ -708,6 +724,9 @@ EOF
         if [ "$chat_id" = "$CHAT_ID" ]; then
           topic_id=""
         fi
+
+        upload_methods=$(format_upload_methods "$UPLOAD_METHOD" "$S3_BUCKET_NAME")
+        [ -z "$upload_methods" ] && upload_methods="локальное сохранение"
 
         message=$(printf '%s\n\n%s %s (%s)\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s\n%s %s' \
           "Бэкап KeenSnap успешно завершён" \

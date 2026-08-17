@@ -120,6 +120,22 @@ get_config_bool() {
   esac
 }
 
+format_upload_methods() {
+  local methods="$1"
+  local bucket_name="$2"
+  local method
+  local formatted=""
+
+  methods=$(echo "$methods" | tr ',' ' ' | tr ' ' '\n' | sed '/^$/d' | awk '!seen[$0]++')
+  for method in $methods; do
+    if [ "$method" = "S3" ] && [ -n "$bucket_name" ]; then
+      method="S3 ($bucket_name)"
+    fi
+    formatted="${formatted}${formatted:+, }$method"
+  done
+  echo "$formatted"
+}
+
 get_backup_content() {
   local selected=""
   local entry
@@ -176,6 +192,7 @@ show_status() {
   local cron_schedule
   local selected_drive
   local upload_methods
+  local s3_bucket_name
   local backup_content
 
   device=$(get_device)
@@ -186,6 +203,8 @@ show_status() {
   cron_schedule=$(get_config_value "CRON_SCHEDULE")
   selected_drive=$(normalize_path "$(get_config_value "SELECTED_DRIVE")")
   upload_methods=$(get_config_value "UPLOAD_METHOD")
+  s3_bucket_name=$(get_config_value "S3_BUCKET_NAME")
+  upload_methods=$(format_upload_methods "$upload_methods" "$s3_bucket_name")
   backup_content=$(get_backup_content)
 
   [ -z "$device" ] && device="unknown"
