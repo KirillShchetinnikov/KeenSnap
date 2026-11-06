@@ -2,8 +2,6 @@
 trap cleanup HUP INT TERM
 
 CONFIG_DIR="/opt/etc/keensnap"
-DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
-CONFIG_FILE="$CONFIG_DIR/config.conf"
 RED='\033[1;31m'
 GREEN='\033[1;32m'
 CYAN='\033[0;36m'
@@ -12,12 +10,15 @@ USERNAME="KirillShchetinnikov"
 REPO="keensnap"
 SCRIPT="keensnap.sh"
 KEENSNAP_DIR="/opt/root/KeenSnap"
+. "$KEENSNAP_DIR/keensnap-config.sh" || exit 1
 SNAPD="keensnap-init"
 CRON_FILE="/opt/etc/crontab"
 CRON_MARKER="# KeenSnap"
 CRON_PATH="/opt/sbin:/opt/bin:/opt/usr/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 LOG_FILE="/opt/var/log/keensnap.log"
 SCRIPT_VERSION=""
+KEENSNAP_USERAGENT="KeenSnap/$SCRIPT_VERSION"
+RCI_URL="http://127.0.0.1:79/rci"
 
 print_help() {
   cat <<EOF
@@ -30,15 +31,15 @@ KeenSnap ${SCRIPT_VERSION}
   help, -h, --help      Показать эту справку
   version              Показать версию
   status               Показать краткий статус устройства и конфигурации
-  config               Вывести пользовательский конфиг и недостающие дефолты
+  config               Вывести итоговые значения конфигурации
   logs                 Вывести $LOG_FILE
-  apply                Применить $CONFIG_FILE и обновить cron
+  apply                Применить конфигурацию и обновить cron
   backup               Запустить бэкап вручную
   update               Обновить пакет через opkg
 
 Конфигурация:
-  В пользовательском файле указываются только изменённые параметры:
-    $CONFIG_FILE
+  Пользовательские переопределения (в порядке имён файлов):
+    $CONFIG_OVERRIDE_DIR/*.conf
 
   Значения по умолчанию находятся в:
     $DEFAULT_CONFIG_FILE
@@ -63,9 +64,19 @@ print_message() {
   printf "${color}%s${NC}\n" "$message"
 }
 
+rci_curl() {
+  local rci_token
+  rci_token=$(get_config_value "RCI_TOKEN")
+  if [ -n "$rci_token" ]; then
+    curl -A "$KEENSNAP_USERAGENT" -H "X-Ndma-Tkn: $rci_token" "$@"
+  else
+    curl -A "$KEENSNAP_USERAGENT" "$@"
+  fi
+}
+
 rci_request() {
   local endpoint="$1"
-  curl -s "http://localhost:79/rci/$endpoint"
+  rci_curl -s "$RCI_URL/$endpoint"
 }
 
 get_device() {
@@ -88,19 +99,6 @@ get_system_name() {
   rci_request "system" | grep -o '"hostname"[[:space:]]*:[[:space:]]*"[^"]*"' | head -n 1 | cut -d'"' -f4 2>/dev/null
 }
 
-get_config_raw() {
-  local key="$1"
-  {
-    grep "^$key=" "$CONFIG_FILE" 2>/dev/null
-    grep "^$key=" "$DEFAULT_CONFIG_FILE" 2>/dev/null
-  } | head -n 1 | cut -d '=' -f2-
-}
-
-get_config_value() {
-  local key="$1"
-  get_config_raw "$key" | sed 's/^"//;s/"$//'
-}
-
 normalize_path() {
   local value="$1"
   while [ "$value" != "/" ] && [ "${value%/}" != "$value" ]; do
@@ -113,7 +111,7 @@ get_config_bool() {
   local key="$1"
   local default="$2"
   local value
-  value=$(get_config_raw "$key")
+  value=$(get_config_value "$key")
   case "$value" in
   true | false) echo "$value" ;;
   *) echo "$default" ;;
@@ -141,14 +139,22 @@ get_backup_content() {
   local entry
   local key
   local label
+  local backup_system
+  backup_system=$(get_config_bool "BACKUP_SYSTEM" "false")
 
   for entry in \
+    "BACKUP_SYSTEM:System" \
     "BACKUP_STARTUP_CONFIG:Startup-Config" \
     "BACKUP_FIRMWARE:Firmware" \
     "BACKUP_ENTWARE:Entware" \
     "BACKUP_WG_PRIVATE_KEY:WireGuard-Private-Key"; do
     key=${entry%%:*}
     label=${entry#*:}
+    case "$key" in
+      BACKUP_STARTUP_CONFIG|BACKUP_FIRMWARE|BACKUP_WG_PRIVATE_KEY)
+        [ "$backup_system" = "true" ] && continue
+        ;;
+    esac
     [ "$(get_config_bool "$key" "false")" = "true" ] && selected="${selected}${selected:+, }$label"
   done
 
@@ -156,25 +162,7 @@ get_backup_content() {
 }
 
 setup_config() {
-  mkdir -p "$KEENSNAP_DIR"
-  mkdir -p "$CONFIG_DIR"
-  if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
-    print_message "Файл значений по умолчанию не найден. Переустановите пакет $REPO" "$RED"
-    return 1
-  fi
-
-  if [ ! -f "$CONFIG_FILE" ]; then
-    print_message "Файл конфигурации не найден. Переустановите пакет $REPO" "$RED"
-    return 1
-  fi
-
-  if command -v dos2unix >/dev/null 2>&1; then
-    dos2unix "$DEFAULT_CONFIG_FILE" >/dev/null 2>&1
-    dos2unix "$CONFIG_FILE" >/dev/null 2>&1
-  else
-    sed -i 's/\r$//' "$DEFAULT_CONFIG_FILE"
-    sed -i 's/\r$//' "$CONFIG_FILE"
-  fi
+  load_config
 }
 
 check_config() {
@@ -233,17 +221,14 @@ show_config() {
   local line
   local key
 
-  printf '%s\n' "# Пользовательский конфиг: $CONFIG_FILE"
-  cat "$CONFIG_FILE"
-  printf '\n%s\n' "# Дефолтные параметры, не указанные в пользовательском конфиге: $DEFAULT_CONFIG_FILE"
+  printf '%s\n' "# Итоговая конфигурация: $DEFAULT_CONFIG_FILE + $CONFIG_OVERRIDE_DIR/*.conf"
 
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       [A-Za-z_]*=*)
         key=${line%%=*}
-        if ! grep -q "^$key=" "$CONFIG_FILE" 2>/dev/null; then
-          printf '%s\n' "$line"
-        fi
+        printf '%s=' "$key"
+        get_config_value "$key" | sed "s/'/'\\\\''/g; 1s/^/'/; \$s/\$/'/"
         ;;
     esac
   done <"$DEFAULT_CONFIG_FILE"

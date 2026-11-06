@@ -4,11 +4,7 @@ KEENSNAP_DIR="/opt/root/KeenSnap"
 CONFIG_DIR="/opt/etc/keensnap"
 SCRIPT="$KEENSNAP_DIR/keensnap.sh"
 INIT_SCRIPT="$KEENSNAP_DIR/keensnap-init"
-LEGACY_CONFIG_FILE="$KEENSNAP_DIR/config.sh"
-OLD_CONFIG_FILE="$KEENSNAP_DIR/config.conf"
-OLD_DEFAULT_CONFIG_FILE="$KEENSNAP_DIR/defaults.conf"
-DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
-CONFIG_FILE="$CONFIG_DIR/config.conf"
+. "$KEENSNAP_DIR/keensnap-config.sh" || exit 1
 BIN_LINK="/opt/bin/keensnap"
 CRON_FILE="/opt/etc/crontab"
 CRON_MARKER="# KeenSnap"
@@ -51,14 +47,17 @@ install_s3cmd() {
 }
 
 mkdir -p "$KEENSNAP_DIR"
-mkdir -p "$CONFIG_DIR"
+mkdir -p "$CONFIG_OVERRIDE_DIR"
+chmod 700 "$CONFIG_OVERRIDE_DIR"
+for config_file in "$CONFIG_OVERRIDE_DIR"/*.conf; do
+  [ -f "$config_file" ] || continue
+  chmod 600 "$config_file"
+done
 mkdir -p "$(dirname "$BIN_LINK")"
 
 if [ -d "/opt/opt/root/KeenSnap" ] && [ ! -f "$SCRIPT" ]; then
   cp -f /opt/opt/root/KeenSnap/keensnap.sh "$SCRIPT" 2>/dev/null || true
   cp -f /opt/opt/root/KeenSnap/keensnap-init "$INIT_SCRIPT" 2>/dev/null || true
-  cp -f /opt/opt/root/KeenSnap/defaults.conf "$DEFAULT_CONFIG_FILE" 2>/dev/null || true
-  cp -f /opt/opt/root/KeenSnap/config.conf "$CONFIG_FILE" 2>/dev/null || true
 fi
 
 if [ -f "/opt/opt/bin/keensnap" ] && [ ! -f "$BIN_LINK" ]; then
@@ -69,14 +68,6 @@ chmod +x "$SCRIPT" 2>/dev/null
 chmod +x "$INIT_SCRIPT" 2>/dev/null
 chmod +x "$BIN_LINK" 2>/dev/null
 
-if [ -f "$LEGACY_CONFIG_FILE" ]; then
-  mv -f "$LEGACY_CONFIG_FILE" "$CONFIG_FILE"
-elif [ -f "$OLD_CONFIG_FILE" ] && ! grep -q '^[A-Za-z_][A-Za-z0-9_]*=' "$CONFIG_FILE" 2>/dev/null; then
-  mv -f "$OLD_CONFIG_FILE" "$CONFIG_FILE"
-fi
-
-rm -f "$OLD_DEFAULT_CONFIG_FILE"
-
 install_s3cmd
 
 if [ ! -x "$BIN_LINK" ]; then
@@ -85,9 +76,7 @@ if [ ! -x "$BIN_LINK" ]; then
 fi
 rm -f "/opt/etc/ndm/schedule.d/99-keensnap.sh"
 
-if [ -f "$CONFIG_FILE" ]; then
-  [ -f "$DEFAULT_CONFIG_FILE" ] && . "$DEFAULT_CONFIG_FILE"
-  . "$CONFIG_FILE"
+if load_config; then
   mkdir -p "$(dirname "$CRON_FILE")"
   touch "$CRON_FILE"
   sed -i "\|$CRON_MARKER|d" "$CRON_FILE"
@@ -108,7 +97,10 @@ if [ -f "$CONFIG_FILE" ]; then
     killall crond >/dev/null 2>&1
     crond >/dev/null 2>&1
   fi
+else
+  print_message "Не удалось загрузить конфигурацию KeenSnap" "$RED"
+  exit 1
 fi
 
-print_message  "Пакет установлен, настройте $CONFIG_FILE и запустите keensnap" "$GREEN"
+print_message  "Пакет установлен, настройте $CONFIG_OVERRIDE_DIR/*.conf и запустите keensnap" "$GREEN"
 exit 0

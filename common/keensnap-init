@@ -1,8 +1,8 @@
 #!/bin/sh
 
 CONFIG_DIR="/opt/etc/keensnap"
-DEFAULT_CONFIG_FILE="$CONFIG_DIR/defaults.conf"
-CONFIG_FILE="$CONFIG_DIR/config.conf"
+KEENSNAP_DIR="/opt/root/KeenSnap"
+. "$KEENSNAP_DIR/keensnap-config.sh" || exit 1
 
 normalize_path() {
   local value="$1"
@@ -12,28 +12,19 @@ normalize_path() {
   echo "$value"
 }
 
-load_config() {
-  if [ ! -f "$DEFAULT_CONFIG_FILE" ]; then
-    echo "Файл значений по умолчанию не найден: $DEFAULT_CONFIG_FILE"
-    exit 1
-  fi
-
-  . "$DEFAULT_CONFIG_FILE"
-  [ -f "$CONFIG_FILE" ] && . "$CONFIG_FILE"
-
-  SELECTED_DRIVE=$(normalize_path "${SELECTED_DRIVE:-}")
-}
-
-load_config
+load_config || exit 1
+SELECTED_DRIVE=$(normalize_path "${SELECTED_DRIVE:-}")
 SCRIPT_VERSION=""
-PROJECT_URL="https://github.com/spatiumstas/keensnap"
-REMOTE_VERSION=$(curl -s "https://api.github.com/repos/spatiumstas/keensnap/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
+KEENSNAP_USERAGENT="KeenSnap/$SCRIPT_VERSION"
+RCI_URL="http://127.0.0.1:79/rci"
+PROJECT_URL="https://github.com/KirillShchetinnikov/KeenSnap"
+REMOTE_VERSION=$(curl -s "https://api.github.com/repos/KirillShchetinnikov/KeenSnap/releases/latest" | grep -Po '"tag_name": "\K.*?(?=")')
 RELEASE_NOTES="$PROJECT_URL/releases/tag"
 datetime=$(date +%Y-%m-%d_%H-%M)
 date="backup$datetime"
 items=""
 statuses=""
-(
+run_backup() (
   case "$1" in
   start)
     if [ -n "$2" ]; then
@@ -57,16 +48,55 @@ statuses=""
         logger -p notice -t KeenSnap "$*"
       }
 
+      rci_curl() {
+        if [ -n "${RCI_TOKEN:-}" ]; then
+          curl -A "$KEENSNAP_USERAGENT" -H "X-Ndma-Tkn: $RCI_TOKEN" "$@"
+        else
+          curl -A "$KEENSNAP_USERAGENT" "$@"
+        fi
+      }
+
       rci_request() {
         local endpoint="$1"
-        curl -s "http://localhost:79/rci/$endpoint"
+        rci_curl -s "$RCI_URL/$endpoint"
       }
 
       rci_parse() {
         local command="$1"
-        curl -fsS -H "Content-Type: application/json" \
-          -d "[{\"parse\":\"$command\"}]" \
-          "http://localhost:79/rci/"
+        local error_message="${2:-Ошибка RCI}"
+        local response
+        local payload
+
+        payload=$(jq -cn --arg command "$command" '[{parse: $command}]') || return 1
+        if ! response=$(rci_curl -fsS -H "Content-Type: application/json" \
+          -d "$payload" "$RCI_URL/" 2>&1); then
+          error "$error_message"
+          printf '%s\n' "$response"
+          return 1
+        fi
+
+        if ! printf '%s' "$response" | jq -e '
+          (type == "array" or type == "object") and
+          ([.. | objects | select(.status? == "error")] | length == 0)
+        ' >/dev/null 2>&1; then
+          error "$error_message"
+          printf '%s\n' "$response"
+          return 1
+        fi
+      }
+
+      check_rci_token() {
+        [ -z "${RCI_TOKEN:-}" ] && return 0
+
+        if rci_curl -fsS -o /dev/null -H "Accept: application/json" "$RCI_URL/whoami"; then
+          return 0
+        fi
+
+        error "Токен RCI недействителен или отозван. Бэкап остановлен."
+        if has_upload_method "Telegram"; then
+          send_to_telegram "Токен RCI недействителен или отозван. Бэкап остановлен." ""
+        fi
+        return 1
       }
 
       ndmc_cli() {
@@ -807,12 +837,9 @@ EOF
           local ndmc_path="${paths_out%%|*}"
           local rel_path="${paths_out##*|}"
           local backup_file="$ndmc_path/${DEVICE_ID}_${FW_VERSION}_$item_name.txt"
-          rci_parse "copy $item_name $backup_file" >/dev/null 2>&1
-          if [ $? -eq 0 ]; then
+          if rci_parse "copy $item_name $backup_file" "Ошибка при сохранении $item_name"; then
             success "$item_name сохранён"
             success=0
-          else
-            error "Ошибка при сохранении $item_name"
           fi
         fi
         items="$items $item_name"
@@ -826,24 +853,24 @@ EOF
         if [ -n "$SELECTED_DRIVE" ]; then
           log "Бэкап $item_name..."
           local backup_file="$SELECTED_DRIVE/$date/$(get_architecture)_$item_name.tar.gz"
-          local exclude_args=""
-          local exclude_list="$ENTWARE_EXCLUDE $date"
+          local exclude_list="$ENTWARE_EXCLUDE"
           local pattern
+          local tar_output
 
+          set -- "--exclude=$date"
+          set -f
           for pattern in $exclude_list; do
-            pattern=$(echo "$pattern" | sed 's:^/*::')
-            [ -n "$pattern" ] && exclude_args="$exclude_args --exclude=./$pattern"
+            pattern=$(echo "$pattern" | sed 's:^/opt/::; s:^/*::')
+            [ -n "$pattern" ] && set -- "$@" "--exclude=./$pattern"
           done
+          set +f
 
-          tar_output=$(tar cvzf "$backup_file" -C /opt $exclude_args . 2>&1)
-          log_operation=$(echo "$tar_output" | tail -n 2)
-
-          if echo "$log_operation" | grep -iq "error\|no space left on device"; then
-            log "Ошибка при сохранении $item_name:" "$RED"
-            echo "$log_operation"
-          else
+          if tar_output=$(tar cvzf "$backup_file" -C /opt "$@" . 2>&1); then
             success "$item_name сохранён"
             success=0
+          else
+            error "Ошибка при сохранении $item_name:"
+            printf '%s\n' "$tar_output" | tail -n 2
           fi
         fi
 
@@ -879,14 +906,38 @@ EOF
           local ndmc_path="${paths_out%%|*}"
           local rel_path="${paths_out##*|}"
           local backup_file="$ndmc_path/${DEVICE_ID}_${FW_VERSION}_$item_name.bin"
-          rci_parse "copy flash:/$item_name $backup_file" >/dev/null 2>&1
-          if [ $? -eq 0 ]; then
+          if rci_parse "copy flash:/$item_name $backup_file" "Ошибка при сохранении $item_name"; then
             success "$item_name сохранена"
             success=0
-          else
-            error "Ошибка при сохранении $item_name"
           fi
         fi
+        items="$items $item_name"
+        statuses="$statuses $success"
+      }
+
+      backup_system() {
+        local success=1
+        local item_name="System"
+        local paths_out ndmc_path file_name backup_file local_file
+
+        log "Бэкап системы через flash:/backup..."
+        paths_out=$(get_drive_path "$SELECTED_DRIVE" "$date")
+        ndmc_path=${paths_out%%|*}
+        file_name="$(sanitize_filename "$DEVICE_ID")_$(sanitize_filename "$FW_VERSION")_system.backup"
+        backup_file="$ndmc_path/$file_name"
+        local_file="$SELECTED_DRIVE/$date/$file_name"
+
+        if rci_parse "copy flash:/backup $backup_file" "Ошибка при сохранении системы"; then
+          if [ -s "$local_file" ]; then
+            success "Система сохранена"
+            success=0
+          else
+            error "Файл бэкапа системы не создан или пуст: $local_file"
+          fi
+        else
+          error "Проверьте поддержку flash:/backup прошивкой и настройку ключа резервного копирования в роутере"
+        fi
+
         items="$items $item_name"
         statuses="$statuses $success"
       }
@@ -894,27 +945,34 @@ EOF
       create_backup_and_send_report() {
         local items=""
         local statuses=""
-        mkdir -p "$SELECTED_DRIVE/$date"
+        mkdir -p "$SELECTED_DRIVE/$date" || return 1
         local backup_performed=0
+        local backup_failed=0
 
         if [ "$BACKUP_ENTWARE" = "true" ]; then
           backup_entware
           backup_performed=1
         fi
 
-        if [ "$BACKUP_STARTUP_CONFIG" = "true" ]; then
-          backup_startup_config
+        if [ "$BACKUP_SYSTEM" = "true" ]; then
+          log "BACKUP_SYSTEM=true: отдельные startup-config, firmware и ключи WireGuard пропускаются"
+          backup_system
           backup_performed=1
-        fi
+        else
+          if [ "$BACKUP_STARTUP_CONFIG" = "true" ]; then
+            backup_startup_config
+            backup_performed=1
+          fi
 
-        if [ "$BACKUP_FIRMWARE" = "true" ]; then
-          backup_firmware
-          backup_performed=1
-        fi
+          if [ "$BACKUP_FIRMWARE" = "true" ]; then
+            backup_firmware
+            backup_performed=1
+          fi
 
-        if [ "$BACKUP_WG_PRIVATE_KEY" = "true" ]; then
-          backup_wg_private_key
-          backup_performed=1
+          if [ "$BACKUP_WG_PRIVATE_KEY" = "true" ]; then
+            backup_wg_private_key
+            backup_performed=1
+          fi
         fi
 
         if [ "$backup_performed" -eq 0 ]; then
@@ -925,6 +983,7 @@ EOF
         local archive_path
         local archive_device_id
         local archive_fw_version
+        local archive_output
         if [ -n "$SELECTED_DRIVE" ] && [ -d "$SELECTED_DRIVE/$date" ]; then
           cp "$LOG_FILE" "$SELECTED_DRIVE/$date/backup_log.txt"
           cat >"$SELECTED_DRIVE/$date/backup_meta.info" <<EOF
@@ -942,17 +1001,18 @@ EOF
             archive_fw_version=$(sanitize_filename "$FW_VERSION")
             archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.7z"
             log "Создание архива с паролем..."
-            7zz a -t7z -mx=9 -p"$ARCHIVE_PASSWORD" "$archive_path" "$SELECTED_DRIVE/$date"
+            archive_output=$(7zz a -t7z -mx=1 -mmt=1 -p"$ARCHIVE_PASSWORD" "$archive_path" "$SELECTED_DRIVE/$date" 2>&1)
           else
             archive_device_id=$(sanitize_filename "$DEVICE_ID")
             archive_fw_version=$(sanitize_filename "$FW_VERSION")
             archive_path="$SELECTED_DRIVE/${archive_device_id}_backup_${datetime}_fw-${archive_fw_version}.tar.gz"
             log "Создание архива..."
-            tar -czf "$archive_path" -C "$SELECTED_DRIVE" "$date"
+            archive_output=$(tar -czf "$archive_path" -C "$SELECTED_DRIVE" "$date" 2>&1)
           fi
           if [ $? -ne 0 ]; then
             error "Ошибка при создании архива"
-            send_to_telegram "Ошибка при создании архива" "$SELECTED_DRIVE/$date/backup_log.txt"
+            [ -z "$archive_output" ] || printf '%s\n' "$archive_output"
+            send_to_telegram "Ошибка при создании архива" "$LOG_FILE"
             rm -rf "$archive_path"
             return 1
           fi
@@ -975,7 +1035,8 @@ EOF
           if [ "$status_value" -eq 0 ]; then
             report="$report$item"$'\n'
           else
-            report="$report$item"$'\n'
+            report="$report$item: ошибка"$'\n'
+            backup_failed=1
           fi
           i=$((i + 1))
         done
@@ -993,7 +1054,12 @@ EOF
             success "Архив сохранён: $archive_path"
             cleanup_old_archives
           fi
-          send_success_telegram_notification "$archive_size" "$backup_content"
+          if [ "$backup_failed" -eq 0 ]; then
+            send_success_telegram_notification "$archive_size" "$backup_content"
+          else
+            error "Бэкап завершён с ошибками отдельных объектов"
+            return 1
+          fi
         else
           if [ "$DELETE_LOCAL_ARCHIVE_AFTER_BACKUP" = "true" ]; then
             rm -f "$archive_path"
@@ -1001,6 +1067,7 @@ EOF
           else
             error "Отправка не удалась, архив сохранён: $archive_path"
           fi
+          return 1
         fi
       }
 
@@ -1008,24 +1075,55 @@ EOF
         rm -rf "$SELECTED_DRIVE/$date"
       }
 
+      selected_drive_available() {
+        local selected_drive="$1"
+        local drive_name="$2"
+
+        [ -n "$drive_name" ] && [ -d "$selected_drive" ] && [ -w "$selected_drive" ] || return 1
+
+        rci_request "ls" 2>/dev/null | jq -e --arg drive "$drive_name:" '
+          .entry[$drive] as $entry
+          | $entry != null and ($entry.mounted // "yes") == "yes"
+        ' >/dev/null 2>&1
+      }
+
       main() {
+        local drive_path drive_name drive_error backup_rc
+
         clean_log "$LOG_FILE"
+        check_rci_token || return 1
         get_device_info
         log "Запуск скрипта: $SCHEDULE"
-        local drive_uuid=$(basename "$SELECTED_DRIVE")
-        local device_uuid=$(echo "$SELECTED_DRIVE" | awk -F'/' '{print $4}')
-        if [ -z "$SELECTED_DRIVE" ] || ([ "$SELECTED_DRIVE" != "/storage" ] && rci_request "ls" 2>/dev/null | grep -q "\"$device_uuid\":") && [ ! -d "$SELECTED_DRIVE" ]; then
-          drive_name=$(basename "$SELECTED_DRIVE")
-          error "Выбранный накопитель $drive_name не подключён"
+
+        if [ -z "$SELECTED_DRIVE" ]; then
+          drive_error="Накопитель для создания бэкапа не выбран"
+          error "$drive_error"
           if has_upload_method "Telegram"; then
-            send_to_telegram "Выбранный накопитель $drive_name не подключён" ""
+            send_to_telegram "$drive_error" ""
+          fi
+          return 1
+        fi
+
+        drive_path=$(get_drive_path "$SELECTED_DRIVE" "$date")
+        drive_name=${drive_path%%:*}
+        if ! selected_drive_available "$SELECTED_DRIVE" "$drive_name"; then
+          drive_error="Выбранный накопитель $drive_name не подключён или недоступен для записи"
+          error "$drive_error"
+          if has_upload_method "Telegram"; then
+            send_to_telegram "$drive_error" ""
           fi
           return 1
         fi
 
         create_backup_and_send_report
+        backup_rc=$?
         delete_temp_folder
-        log "Скрипт завершил работу"
+        if [ "$backup_rc" -eq 0 ]; then
+          log "Скрипт завершил работу"
+        else
+          error "Скрипт завершил работу с ошибками"
+        fi
+        return "$backup_rc"
       }
 
       version_to_number() {
@@ -1063,7 +1161,7 @@ EOF
         fi
       }
 
-      main "$SCHEDULE"
+      main "$SCHEDULE" || exit 1
       check_update
     fi
     ;;
@@ -1071,4 +1169,14 @@ EOF
     exit 1
     ;;
   esac
+)
+
+# POSIX pipelines return tee's status; preserve the backup result separately.
+exit_status_file=$(mktemp "${TMPDIR:-/tmp}/keensnap-status.XXXXXX") || exit 1
+trap 'rm -f "$exit_status_file"' 0
+(
+  run_backup "$@"
+  printf '%s\n' "$?" >"$exit_status_file"
 ) 2>&1 | tee -a "$LOG_FILE"
+read -r backup_status <"$exit_status_file"
+exit "${backup_status:-1}"

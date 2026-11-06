@@ -33,12 +33,10 @@ _pkg-control:
 
 _pkg-scripts:
 	cp common/ipk/postinst out/$(BUILD_DIR)/control/postinst
-	cp common/ipk/conffiles out/$(BUILD_DIR)/control/conffiles
 	cp common/ipk/postrm out/$(BUILD_DIR)/control/postrm
 	find out/$(BUILD_DIR)/control -type f -exec sed -i 's/\r$$//' {} +
 	chmod +x out/$(BUILD_DIR)/control/postinst
 	chmod +x out/$(BUILD_DIR)/control/postrm
-	chmod +x out/$(BUILD_DIR)/control/conffiles
 
 _pkg-ipk:
 	make _pkg-clean
@@ -47,17 +45,18 @@ _pkg-ipk:
 	cd out/$(BUILD_DIR)/control; tar czvf ../control.tar.gz .; cd ../../..
 
 	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap
-	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap
+	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/config.d
 	mkdir -p out/$(BUILD_DIR)/data$(ROOT_DIR)/bin
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap-init > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
 	sed 's/^SCRIPT_VERSION=""/SCRIPT_VERSION="$(VERSION)"/' common/keensnap.sh > out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
+	cp common/keensnap-config.sh out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-config.sh
 	cp common/keensnap-bin out/$(BUILD_DIR)/data$(ROOT_DIR)/bin/keensnap
-	cp common/defaults.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/defaults.conf
 	cp common/config.conf out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/config.conf
 	find out/$(BUILD_DIR)/data$(ROOT_DIR) -type f -exec sed -i 's/\r$$//' {} +
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap.sh
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/root/KeenSnap/keensnap-init
 	chmod +x out/$(BUILD_DIR)/data$(ROOT_DIR)/bin/keensnap
+	chmod 700 out/$(BUILD_DIR)/data$(ROOT_DIR)/etc/keensnap/config.d
 	cd out/$(BUILD_DIR)/data; tar czvf ../data.tar.gz .; cd ../../..
 
 	echo 2.0 > out/$(BUILD_DIR)/debian-binary
