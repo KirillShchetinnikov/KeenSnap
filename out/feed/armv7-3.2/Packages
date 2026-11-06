@@ -1,0 +1,12 @@
+Package: keensnap
+Version: 1.5.10
+Depends: curl, tar, ca-certificates, wget-ssl, jq, cron, wireguard-tools, python3, python3-pip
+Section: utils
+Architecture: all
+License: MIT
+URL: https://github.com/KirillShchetinnikov/KeenSnap
+Description: Keenetic backup utility with Telegram and Google Drive support
+Filename: keensnap_1.5.10_all.ipk
+Size: 15719
+SHA256sum: 879563a980ae3e29bcd9a13e04190f464d29fd54725be24985f688356c83edab
+
