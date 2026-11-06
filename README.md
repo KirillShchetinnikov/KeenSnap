@@ -323,6 +323,12 @@ FEED_URL="https://example.com/keensnap" sh add-repo.sh
 
 В репозитории есть workflow `.github/workflows/publish-feed.yml`: он запускает `make feed` и публикует `out/feed` в ветку `gh-pages`. В настройках GitHub Pages нужно один раз выбрать источник `Deploy from a branch`, ветку `gh-pages`, директорию `/`.
 
+### Наименование релизов
+
+Заголовок GitHub Release должен иметь формат **`KeenSnap <version>`**, например `KeenSnap 1.5.10`. Перечень изменений и инструкции по обновлению указываются в описании релиза, без добавления к заголовку.
+
+Тег релиза совпадает со значением файла `VERSION`: например, `1.5.10`, без префикса `v`. Имя пакета — `keensnap_<version>_all.ipk`.
+
 <details>
   <summary>Подключение Telegram</summary>
 
